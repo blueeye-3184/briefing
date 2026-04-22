@@ -1,0 +1,22 @@
+{
+    "include": [
+        ".",
+        "tests"
+    ],
+    "exclude": [
+        "**/node_modules",
+        "**/.*",
+        "**/__pycache__",
+        ".venv"
+    ],
+    "typeCheckingMode": "strict",
+    "reportMissingTypeStubs": false,
+    "reportUnknownMemberAccess": false,
+    "reportUnknownVariableType": false,
+    "reportUnknownArgumentType": false,
+    "reportUnknownParameterType": false,
+    "reportUnknownMemberType": false,
+    "reportUntypedFunctionDecorator": false,
+    "reportUnnecessaryCast": false,
+    "reportAttributeAccessIssue": false
+}

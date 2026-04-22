@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Project Specific
+log list/
+loglist.txt
+inspect_notion.py
+requirements.txt
+tests/__pycache__/
