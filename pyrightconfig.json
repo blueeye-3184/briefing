@@ -1,7 +1,6 @@
 {
     "include": [
-        ".",
-        "tests"
+        "."
     ],
     "exclude": [
         "**/node_modules",
