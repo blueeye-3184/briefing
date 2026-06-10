@@ -74,20 +74,21 @@ class GeminiProvider:
         # Pylance UnknownMemberType 회피를 위한 Any 캐스팅
         self.client: Any = None
         if api_key:
-            # v1beta API 버전이 Search Grounding 등 도구 지원에 더 적합함
+            # v1beta API 버전 사용
             client_instance: Any = genai.Client(
                 api_key=api_key,
                 http_options=types.HttpOptions(api_version='v1beta')
             ) # type: ignore
             self.client = client_instance
-        # 2026년 4월 기준 실제 지원 모델 리스트
+        # 2026년 6월 기준 실제 지원 모델 리스트 (list() 조회 결과 반영)
         self.models: List[str] = [
-            "gemini-2.0-flash",       # 범용 안정판
-            "gemini-2.0-pro",         # 고성능
-            "gemini-2.5-flash",       # 최신 주력
-            "gemini-1.5-flash",       # 레거시 안정
-            "gemini-2.0-flash-lite"   # 경량
+            "models/gemini-2.5-flash",
+            "models/gemini-2.5-pro",
+            "models/gemini-2.0-flash",
+            "models/gemini-2.5-flash-lite",
+            "models/gemini-flash-latest"
         ] 
+
 
     def generate_content(self, topic: str) -> str:
         if self.client is None:
