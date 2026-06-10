@@ -189,11 +189,22 @@ class NotionPublisher:
         return cast(Dict[str, Any], res.json())
 
     def get_or_create_page(self, parent_id: str, title: str, icon: str = "📝") -> str:
-        existing_id: Optional[str] = self.find_page_by_title(title)
-        if existing_id is not None:
-            print(f"[정보] 기존 페이지 발견: {title} ({existing_id})")
-            return existing_id
+        # 1. 먼저 해당 부모 하위의 자식들을 직접 조회하여 동일한 제목이 있는지 확인 (정밀도 향상)
+        url: str = f"https://api.notion.com/v1/blocks/{parent_id}/children"
+        res_children: Dict[str, Any] = self.request("GET", url)
+        raw_results: Any = res_children.get('results')
+        
+        if isinstance(raw_results, list):
+            for result in raw_results:
+                if not isinstance(result, dict): continue
+                if result.get('type') == 'child_page':
+                    child_page = result.get('child_page', {})
+                    if child_page.get('title') == title:
+                        c_id = result.get('id')
+                        print(f"[정보] 기존 페이지 발견 (부모 일치): {title} ({c_id})")
+                        return cast(str, c_id)
 
+        # 2. 없으면 새로 생성
         data: Dict[str, Any] = {
             "parent": {"page_id": parent_id},
             "icon": {"type": "emoji", "emoji": icon},
@@ -203,6 +214,7 @@ class NotionPublisher:
         new_id: Any = res.get('id')
         if not isinstance(new_id, str):
             raise ValueError("페이지 생성 후 ID를 받지 못했습니다.")
+        print(f"[정보] 새 페이지 생성: {title} ({new_id})")
         return new_id
 
     def find_page_by_title(self, title: str) -> Optional[str]:
