@@ -16,6 +16,7 @@ load_dotenv()
 GEMINI_API_KEY: Optional[str] = os.environ.get('GEMINI_API_KEY')
 NOTION_TOKEN: Optional[str] = os.environ.get('NOTION_TOKEN')
 PARENT_PAGE_ID: str = os.environ.get('PARENT_PAGE_ID', '30da70ceb29b81f28bfde4bd8a03d3e0')
+SLACK_WEBHOOK_URL: Optional[str] = os.environ.get('SLACK_WEBHOOK_URL')
 
 # KST (UTC+9) 설정
 KST: timezone = timezone(timedelta(hours=9))
@@ -62,8 +63,9 @@ class BriefingReport:
 
     @property
     def page_title(self) -> str:
-        # 페이지 제목: '요일 주간 보고: 주제' (사용자 실사 결과 반영)
-        return f"{self.day_name} 주간 보고: {self.topic}"
+        # 사용자 요청에 따라 날짜 및 요일 접두사 복구: '[2026-04-22(수요일)] 주제'
+        date_prefix: str = self.date.strftime('%Y-%m-%d')
+        return f"[{date_prefix}({self.day_name})] {self.topic}"
 
 # ==========================================
 # Infrastructure Layer
@@ -301,17 +303,40 @@ class NotionPublisher:
         }
         self.request("POST", "https://api.notion.com/v1/pages", data)
 
+class SlackNotifier:
+    """Slack 실시간 알림 서비스"""
+    def __init__(self, webhook_url: Optional[str]) -> None:
+        self.webhook_url = webhook_url
+
+    def notify(self, message: str, level: str = "info") -> None:
+        if not self.webhook_url:
+            return
+            
+        emoji = "ℹ️"
+        if level == "success": emoji = "✅"
+        elif level == "error": emoji = "🚨"
+        
+        payload = {
+            "text": f"{emoji} *[Briefing System]* {message}"
+        }
+        try:
+            requests.post(self.webhook_url, json=payload, timeout=10)
+        except Exception as e:
+            print(f"[경고] 슬랙 알림 전송 실패: {e}")
+
 # ==========================================
 # Application Layer
 # ==========================================
 class BriefingApplicationService:
-    def __init__(self, gemini: GeminiProvider, notion: NotionPublisher) -> None:
+    def __init__(self, gemini: GeminiProvider, notion: NotionPublisher, slack: SlackNotifier) -> None:
         self.gemini = gemini
         self.notion = notion
+        self.slack = slack
 
     def run_daily_briefing(self) -> None:
         day_name, topic = BriefingSchedule.get_today_topic()
-        print(f"[{datetime.now(KST).strftime('%Y-%m-%d')}] 주제: {topic}")
+        date_str = datetime.now(KST).strftime('%Y-%m-%d')
+        print(f"[{date_str}] 주제: {topic}")
 
         try:
             content: str = self.gemini.generate_content(topic)
@@ -323,15 +348,15 @@ class BriefingApplicationService:
             
             self.notion.publish_report(w_id, report)
             print(f"[성공] 노션 저장 완료")
+            self.slack.notify(f"오늘자 브리핑 저장 완료: *{report.page_title}*", "success")
         except Exception as e:
+            err_msg = f"오늘자 브리핑 생성 실패\n- *주제*: {topic}\n- *오류*: {str(e)[:200]}"
             print(f"[실패] 오류 발생: {e}")
-
-    # 인자 이름 불일치 가능성을 방지하기 위한 오버로딩 또는 직접 호출 수정
-    def _publish(self, pid: str, r: BriefingReport) -> None:
-        self.notion.publish_report(pid, r)
+            self.slack.notify(err_msg, "error")
 
 if __name__ == "__main__":
     g_p = GeminiProvider(GEMINI_API_KEY)
     n_p = NotionPublisher(NOTION_TOKEN)
-    service = BriefingApplicationService(g_p, n_p)
+    s_p = SlackNotifier(SLACK_WEBHOOK_URL)
+    service = BriefingApplicationService(g_p, n_p, s_p)
     service.run_daily_briefing()
