@@ -2,6 +2,16 @@
 
 이 파일은 프로젝트의 주요 업데이트 및 수정 사항을 기록하는 릴리즈 노트입니다.
 
+## [2026-06-22] - Slack 환경 변수 주입 및 예외 처리 시스템 강화 (v6.6)
+- **Actions 파이프라인 무결성 강화**:
+    - `briefing_auto.py`의 `run_daily_briefing` 메소드 예외 처리에서 `raise e`를 적용하여 Silent Success(오류 발생 시에도 Actions가 성공으로 뜨는 현상) 문제를 완전 격퇴.
+    - GitHub Actions 워크플로우 `.github/workflows/daily_briefing.yml`에 `SLACK_WEBHOOK_URL` 환경 변수를 정식 주입하여 자동 실행 시 Slack 실시간 보고 가동.
+- **모델 및 테스트 호환성 정비**:
+    - 2026년 6월 기준 변경된 API 모델 리스트(`models/gemini-pro-latest` 추가 및 `models/gemini-2.5-flash-lite` 제거) 반영.
+    - Notion의 `blocks/children` 조회 방식으로 바뀐 폴더 체크 알고리즘에 맞추어 `tests/test_gemini_provider.py` 및 `tests/test_notion_infrastructure.py` 모의 객체(Mock) 로직 완전 개편 (9개 단위 테스트 100% 통과 확보).
+- **거버넌스 점검 및 중복 식별**:
+    - 노션 API 트리 조회를 통해 기존 글로벌 검색 버그로 인해 `2026년 04월` 밑에 잘못 안착된 중복 `2026년 06월` 폴더와 Root 하위의 정상 `2026년 06월` 폴더 간의 간섭 현상 규명. (6월 11일 ~ 6월 21일 이력은 정상 위치에 누락 없이 누적 기록되었음을 파악)
+
 ## [2026-06-10] - 거버넌스 완결 및 공공 배포 버전 (Public Release v6.5)
 - **13인 적대적 검증 위원회(Adversarial Reviewers) 통합**:
     - **거버넌스 최신화**: `01_Standard_Procedures` 규준에 따라 기존 7인 위원회를 13인 체제로 대폭 확장.
