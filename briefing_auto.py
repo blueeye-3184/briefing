@@ -76,19 +76,15 @@ class GeminiProvider:
         # Pylance UnknownMemberType 회피를 위한 Any 캐스팅
         self.client: Any = None
         if api_key:
-            # v1beta API 버전 사용
-            client_instance: Any = genai.Client(
-                api_key=api_key,
-                http_options=types.HttpOptions(api_version='v1beta')
-            ) # type: ignore
+            client_instance: Any = genai.Client(api_key=api_key) # type: ignore
             self.client = client_instance
         # 2026년 6월 기준 실제 지원 모델 리스트 (list() 조회 결과 반영)
         self.models: List[str] = [
             "models/gemini-2.5-flash",
             "models/gemini-2.5-pro",
             "models/gemini-2.0-flash",
-            "models/gemini-2.5-flash-lite",
-            "models/gemini-flash-latest"
+            "models/gemini-flash-latest",
+            "models/gemini-pro-latest"
         ] 
 
 
@@ -353,6 +349,7 @@ class BriefingApplicationService:
             err_msg = f"오늘자 브리핑 생성 실패\n- *주제*: {topic}\n- *오류*: {str(e)[:200]}"
             print(f"[실패] 오류 발생: {e}")
             self.slack.notify(err_msg, "error")
+            raise e
 
 if __name__ == "__main__":
     g_p = GeminiProvider(GEMINI_API_KEY)
