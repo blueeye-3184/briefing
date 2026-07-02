@@ -142,36 +142,75 @@ class GeminiProvider:
         reraise=True
     )
     def _call_api(self, model_name: str, topic: str, use_tools: bool = True) -> str:
-        prompt: str = (
-            f"[{topic}]에 대해 대한민국 건축 분야 전문가 수준의 '학술적 심층 분석 리포트'를 작성해줘.\n\n"
-            f"다음 요구사항을 엄격히 준수할 것:\n"
-            f"1. 분량: 공백 포함 5,000자 내외의 전문적인 내용을 담을 것.\n"
-            f"2. 핵심 출처 타겟팅: 반드시 '대한건축학회(AIK)', 'DBpia', 'RISS', '구글 스칼라'에서 검색되는 최신 논문과 기술 보고서의 데이터를 인용할 것.\n"
-            f"3. 전문성: 단순 뉴스보다는 학술적 이론, 실험 데이터, 설계 표준(KDS/KCS) 등을 언급하며 깊이 있게 서술할 것.\n"
-            f"4. 자료 명시: 인용 시 [논문명 / 저자 / 대한건축학회 / 발행연도] 식으로 출처를 정밀하게 표기할 것.\n"
-            f"5. 검색 전략: 검색 도구를 활용해 위 학술 사이트들의 공개된 인덱스 정보를 최대한 활용할 것."
-        )
+        client: Any = self.client
         
-        tools: List[Any] = []
+        # 1단계: 검색 그라운딩을 이용한 실제 논문/특허 정보 수집
+        real_papers: Optional[str] = None
         if use_tools:
             try:
-                search_tool = types.Tool(google_search_retrieval=types.GoogleSearchRetrieval())
-                tools.append(search_tool)
-            except Exception:
-                pass
-        
-        client: Any = self.client
-        config_args: Dict[str, Any] = {}
-        if tools:
-            config_args["tools"] = tools
+                retrieval_prompt = (
+                    f"대한민국 학술 DB(RISS, DBpia, 대한건축학회, 한국학술지인용색인 등) 및 특허 정보망에서 [{topic}]와 관련된 실제 실존하는 한국어 연구 논문 또는 특허 4~5개를 구글 검색 도구를 활발히 사용하여 찾아내십시오.\n"
+                    f"절대로 가상의 논문을 지어내거나 가짜 저자를 생성해서는 안 됩니다. 100% 실존하는 진짜 정보만 수집하십시오.\n"
+                    f"검색 결과에서 확인되는 실제 존재하는 진짜 논문/특허 정보만 다음 형식으로 하나씩 나열해서 응답하십시오. (각 항목은 절대 다른 논문 정보와 뒤섞이면 안 됩니다):\n"
+                    f"1. [논문명 또는 특허명] / [실제 저자명 또는 발명자명] / [수록학회 또는 출처] / [발행연도] / [검색 결과 스니펫에서 추출한 실제 수치나 주요 연구 결론 문장 1-2줄]\n"
+                )
+                print(f"[1단계] 관련 논문 및 특허 실측 검색 중 (모델: {model_name})...")
+                search_tool = types.Tool(google_search=types.GoogleSearch())
+                
+                response1 = client.models.generate_content(
+                    model=model_name,
+                    contents=retrieval_prompt,
+                    config=types.GenerateContentConfig(tools=[search_tool])
+                )
+                real_papers = response1.text
+                print(f"[1단계 결과 수집 완료]\n{real_papers}\n")
+            except Exception as e:
+                print(f"[경고] 1단계 논문 수집 중 에러 발생: {e}. 도구 없이 1단계 재시도합니다.")
+                real_papers = None
 
-        response: Any = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(**config_args)
+        # 만약 1단계에서 논문 정보 획득에 실패했거나 예외가 발생한 경우, 폴백(기존과 유사하게 단단계로 작성)
+        if not real_papers or "None" in real_papers or len(real_papers.strip()) < 50:
+            print("[경고] 1단계 수집 결과가 유효하지 않습니다. 단단계 리포트 생성으로 폴백합니다.")
+            prompt = (
+                f"[{topic}]에 대해 대한민국 건축 분야 전문가 수준의 '학술적 심층 분석 리포트'를 작성해줘.\n\n"
+                f"다음 요구사항을 엄격히 준수할 것:\n"
+                f"1. 분량: 공백 포함 5,000자 내외의 전문적인 내용을 담을 것.\n"
+                f"2. 주의: 실존하지 않는 가짜 논문 제목이나 가짜 저자명(최OO 등), 가짜 DOI 주소를 임의로 지어내 기재하는 것을 엄격히 금지함.\n"
+                f"3. 자료 인용 시, 신뢰성 있는 출처(학회지, 저널명)만을 언급하되 가상 데이터를 조합하지 말 것."
+            )
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
+            text_val = response.text
+            if not isinstance(text_val, str) or not text_val:
+                raise ValueError(f"{model_name} 모델로부터 유효한 텍스트 응답을 받지 못했습니다.")
+            return text_val
+
+        # 2단계: 수집된 진짜 논문/특허 정보를 기반으로 심층 분석 리포트 작성 (도구 미사용)
+        print(f"[2단계] 수집된 실측 정보를 기반으로 리포트 작성 중...")
+        generation_prompt = (
+            f"당신은 1단계에서 수집된 실제 논문/특허 목록만을 100% 사용하여 보고서를 작성하는 분석 전문가입니다.\n\n"
+            f"주제: [{topic}]\n\n"
+            f"[인용할 실제 논문 목록 (이 목록 외에 다른 가짜 논문이나 임의의 저자는 절대 인용하지 마십시오)]\n{real_papers}\n\n"
+            f"다음 요구사항을 한 치의 오차도 없이 엄격히 준수하십시오:\n"
+            f"1. 본문 작성 시, 반드시 위 [인용할 실제 논문 목록]에 제공된 논문 정보만을 인용하여 본문 전반에 걸쳐 유기적으로 녹여내십시오. 제공되지 않은 임의의 다른 학술 자료를 지어내거나 인용하는 행위는 학술 무결성에 위배되므로 절대 금지합니다.\n"
+            f"2. 보고서 본문 하단에 반드시 '참고문헌' 섹션을 작성하고, 위 목록에 포함된 논문들에 대해 아래 양식을 100% 준수하여 한 문항씩 기재하십시오. 플레이스홀더를 남겨두지 말고 반드시 실제 논문 정보로 치환하여 작성해야 합니다:\n"
+            f"   - [논문명 또는 특허명 / 저자명 또는 발명자명 / 수록학회 또는 출처 / 발행연도]\n"
+            f"   - [[구글 스칼라](https://scholar.google.com/scholar?q=<실제논문제목>+<저자명>)]\n"
+            f"   - [[DBpia](https://www.dbpia.co.kr/search/topSearch?searchOption=all&query=<실제논문제목>+<저자명>)]\n"
+            f"   - [[RISS](https://www.riss.kr/search/Search.do?query=<실제논문제목>+<저자명>)]\n"
+            f"   - **[검색 결과 실측 증거 (Grounding Evidence)]**: 1단계 목록에 수집되어 제공된 각 논문의 실제 수치나 주요 연구 결론 요약문장을 그대로 옮겨 적으십시오.\n"
+            f"3. 권/호/페이지 범위 정보(예: 34(1), 3-10)는 환각 방지를 위해 절대로 포함하지 마십시오.\n"
+            f"4. 분량은 공백 포함 5,000자 내외로 학술적 가치를 지니도록 깊이 있게 구성하십시오."
         )
         
-        text_val: Optional[Any] = getattr(response, 'text', None)
+        response2 = client.models.generate_content(
+            model=model_name,
+            contents=generation_prompt
+        )
+        
+        text_val = response2.text
         if not isinstance(text_val, str) or not text_val:
             raise ValueError(f"{model_name} 모델로부터 유효한 텍스트 응답을 받지 못했습니다.")
             
