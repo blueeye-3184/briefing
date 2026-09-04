@@ -37,7 +37,7 @@
 | 12 | **History Guardian** | 체크포인트 설정 및 데이터 보존 확인 | "컨텍스트 전이(Bleeding)" 및 "초기화 실패" 공격 |
 | 13 | **Security Officer** | 연구 윤리 준수 및 데이터 보안 감사 | "보안 취약" 및 "데이터 폐쇄성/윤리 결함" 타격 |
 
-## 🚀 주요 기능 및 인프라 (v8.0 Academic OpenAccess Architecture)
+## 🚀 주요 기능 및 인프라 (v8.1 Academic OpenAccess Architecture)
 - **매일 자동 실행**: GitHub Actions를 통해 매일 아침 **08:17 (KST)** 정기 실행 및 Slack 실시간 알림.
 - **100% 피어리뷰 & 오픈액세스(OA) 학술 DB 연동**: 글로벌 공인 학술 DB(OpenAlex & Crossref) REST API를 직접 연동하여 석/박사 학위논문(`dissertation`), 단행본, 학술대회 발표초록을 원천 배제(`type:article`)하고, 누구나 무료 전문 열람이 가능한 오픈액세스(`is_oa:true`) 정규 학술지 논문만 수집.
 - **가짜 논문 환각 0% 차단 (Fact Context Injection)**: LLM에게 인터넷 검색이나 서지 작성을 맡기지 않고, Python 코드가 확보한 실제 논문 메타데이터와 연구 초록(Abstract) 원문만을 주입하여 학술적 심층 분석(공백 포함 4,000~5,000자) 작성에만 전념.
