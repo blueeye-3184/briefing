@@ -37,27 +37,38 @@
 | 12 | **History Guardian** | 체크포인트 설정 및 데이터 보존 확인 | "컨텍스트 전이(Bleeding)" 및 "초기화 실패" 공격 |
 | 13 | **Security Officer** | 연구 윤리 준수 및 데이터 보안 감사 | "보안 취약" 및 "데이터 폐쇄성/윤리 결함" 타격 |
 
-## 🚀 주요 기능 및 인프라
-- **매일 자동 실행**: GitHub Actions를 통해 매일 아침 **08:17 (KST)** 실행.
-- **학술적 심층 분석**: 공백 포함 5,000자 내외의 SCI 리뷰어급 대용량 리포트 생성.
-- **실시간 학술 DB 연동**: Google Search Grounding을 통한 대한건축학회(AIK), DBpia, RISS 실시간 참조.
-- **5중 에러 방어 체계**: Gemini 2.5/2.0 시리즈 기반 5단계 모델 폴백 및 지수 백오프 적용.
-- **노션 자동 구조화**: '년-월 > 주차 > 요일' 계층 구조 자동 유지 및 블록 단위 분할 저장.
+## 🚀 주요 기능 및 인프라 (v8.0 Academic OpenAccess Architecture)
+- **매일 자동 실행**: GitHub Actions를 통해 매일 아침 **08:17 (KST)** 정기 실행 및 Slack 실시간 알림.
+- **100% 피어리뷰 & 오픈액세스(OA) 학술 DB 연동**: 글로벌 공인 학술 DB(OpenAlex & Crossref) REST API를 직접 연동하여 석/박사 학위논문(`dissertation`), 단행본, 학술대회 발표초록을 원천 배제(`type:article`)하고, 누구나 무료 전문 열람이 가능한 오픈액세스(`is_oa:true`) 정규 학술지 논문만 수집.
+- **가짜 논문 환각 0% 차단 (Fact Context Injection)**: LLM에게 인터넷 검색이나 서지 작성을 맡기지 않고, Python 코드가 확보한 실제 논문 메타데이터와 연구 초록(Abstract) 원문만을 주입하여 학술적 심층 분석(공백 포함 4,000~5,000자) 작성에만 전념.
+- **코드 레벨 서지정보 및 원문 링크 자동 결합**: 모델이 참고문헌을 임의 조작하지 못하도록 차단하고, 실제 논문명, 저자, 학술지, 연도, 공인 DOI 및 오픈액세스 무료 전문 다운로드 링크를 Python 코드가 100% 일치하도록 직접 렌더링.
+- **자료 부재 시 거부 정책 (Abstention Policy)**: 금일 주제에 부합하는 피어리뷰 OA 논문이 없을 경우 억지로 가짜 인용을 창작하지 않고, `[Abstention Notice: 오픈액세스 피어리뷰 논문 부재]`를 솔직히 명시한 후 표준 기술 가이드라인 중심 분석으로 전환.
+- **5중 모델 회피 체계**: Gemini 2.5/2.0 시리즈 기반 5단계 모델 폴백 및 지수 백오프(Exponential Backoff) 적용.
+- **노션 자동 계층 구조화**: '년-월 > 주차 > 요일' 계층 구조 자동 탐색/생성 및 2,000자 단위 블록 분할 저장.
 
 ## 📂 파일 구조
-- `briefing_auto.py`: 핵심 로직 (Gemini + Notion Integration)
+- `briefing_auto.py`: 핵심 파이프라인 (AcademicProvider + GeminiProvider + NotionPublisher + SlackNotifier)
 - `01_Standard_Procedures/`: 최상위 거버넌스 및 표준 작업 절차서 (GRID, IRD-DP, SOP)
-- `tests/`: 시스템 무결성 검증을 위한 DDD/TDD 테스트 수트
+- `03.Committee_Opinions.md`: 13인 위원회 Tier 1 전략 비준 및 의사결정 로그 (Decision IDs)
+- `04.Data_Collection_Log.md`: 실시간 실행 및 파이프라인 무결성 감사 로그
 - `LOGLIST.md`: 브리핑 실행 이력 및 API 응답 로그 아카이브
-- `update.md`: 프로젝트 업데이트 및 릴리즈 노트
+- `update.md`: 프로젝트 주요 릴리즈 노트 (v1.0 ~ v8.0)
+- `tests/`: 시스템 무결성 검증을 위한 15개 단위 테스트 수트 (Domain, Academic, Gemini, Notion, Markdown)
 
-## 🛠 실행 방법
-1. 로컬 환경에 `.env` 파일을 생성하고 `GEMINI_API_KEY`, `NOTION_TOKEN`, `PARENT_PAGE_ID`를 설정합니다.
-2. 필요한 패키지를 설치합니다 (`pip install google-genai requests tenacity python-dotenv`).
-3. 아래 명령어를 실행합니다.
+## 🛠 실행 및 검증 방법
+1. 로컬 환경에 `.env` 파일을 생성하고 `GEMINI_API_KEY`, `NOTION_TOKEN`, `PARENT_PAGE_ID` (선택: `SLACK_WEBHOOK_URL`)를 설정합니다.
+2. 필수 의존 패키지를 설치합니다:
+```bash
+pip install -r requirements.txt
+```
+3. 시스템 단위 테스트를 실행합니다 (15개 테스트 전수 통과 확인):
+```bash
+pytest
+```
+4. 일일 자동 브리핑을 실행합니다:
 ```bash
 python briefing_auto.py
 ```
 
 ---
-*본 프로젝트는 개인 연구(LOD 400 기반 설계 자동화)의 인프라로서 구축되었으며, 13인 위원회의 엄격한 적대적 검증을 통과했습니다.*
+*본 프로젝트는 개인 연구(LOD 400 기반 설계 자동화)의 인프라로서 구축되었으며, 13인 위원회의 엄격한 적대적 검증 및 Tier 1 비준을 통과했습니다.*
