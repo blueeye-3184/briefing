@@ -195,7 +195,7 @@ def main():
 
     # Step 4: Git 커밋 및 태그
     print("[4/4] Git 스테이징 및 커밋/태그 생성 중...")
-    run_cmd(["git", "add", "README.md", "update.md", "03.Committee_Opinions.md", "04.Data_Collection_Log.md", "LOGLIST.md", "briefing_auto.py", "01_Standard_Procedures/", "scripts/"])
+    run_cmd(["git", "add", "README.md", "update.md", "03.Committee_Opinions.md", "04.Data_Collection_Log.md", "LOGLIST.md", "briefing_auto.py", "01_Standard_Procedures/", "scripts/", "sync_release.py"])
     if os.path.exists("tests"):
         run_cmd(["git", "add", "tests/"])
     
