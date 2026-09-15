@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple, cast
 from google import genai # type: ignore
 from google.genai import types # type: ignore
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type # type: ignore
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception, retry_if_exception_type # type: ignore
 from dotenv import load_dotenv # type: ignore
 
 # .env 파일 로드 (로컬 개발 환경용)
@@ -266,11 +266,11 @@ class GeminiProvider:
             client_instance: Any = genai.Client(api_key=api_key) # type: ignore
             self.client = client_instance
         self.models: List[str] = [
+            "models/gemini-3.8-flash",
+            "models/gemini-3.7-flash",
+            "models/gemini-3.6-flash",
             "models/gemini-2.5-flash",
-            "models/gemini-2.5-pro",
-            "models/gemini-2.0-flash",
-            "models/gemini-flash-latest",
-            "models/gemini-pro-latest"
+            "models/gemini-2.5-flash-lite"
         ]
 
     def generate_content(self, topic: str, papers: Optional[List[AcademicPaper]] = None) -> str:
@@ -310,17 +310,25 @@ class GeminiProvider:
             except Exception as e:
                 print(f"[경고] {model_name} 실패: {e}")
                 last_err = e
-                time.sleep(10)
+                time.sleep(5)
                 continue
 
         if isinstance(last_err, Exception):
             raise last_err
         return "리포트 생성 실패"
 
+    @staticmethod
+    def _is_retryable_api_error(exc: BaseException) -> bool:
+        """404 Not Found 또는 지원 중단 등 영구적 모델 미지원 오류는 재시도 없이 즉시 다음 모델로 전환"""
+        msg = str(exc).lower()
+        if "404" in msg or "not_found" in msg or "no longer available" in msg:
+            return False
+        return True
+
     @retry(
-        retry=retry_if_exception_type(Exception),
-        stop=stop_after_attempt(4 if os.environ.get('GITHUB_ACTIONS') else 2),
-        wait=wait_exponential(multiplier=20 if os.environ.get('GITHUB_ACTIONS') else 10, min=60, max=600), 
+        retry=retry_if_exception(lambda exc: GeminiProvider._is_retryable_api_error(exc)),
+        stop=stop_after_attempt(3 if os.environ.get('GITHUB_ACTIONS') else 2),
+        wait=wait_exponential(multiplier=2, min=5, max=30), 
         reraise=True
     )
     def _call_api(self, model_name: str, topic: str, papers: Optional[List[AcademicPaper]] = None, use_tools: bool = False, **kwargs: Any) -> str:
