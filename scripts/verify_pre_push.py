@@ -68,7 +68,7 @@ def main() -> int:
         return 1
 
     # 2. Run unit tests to ensure no broken code is pushed
-    print('[Pre-Push] 15개 단위 테스트 무결성 전수 검증 중...')
+    print('[Pre-Push] 전체 단위 테스트 무결성 전수 검증 중...')
     ret_code, test_output = run_unit_tests()
     if ret_code != 0:
         print('\n' + '=' * 76)
@@ -78,7 +78,7 @@ def main() -> int:
         print('=' * 76 + '\n')
         return 1
 
-    print('✅ [Pre-Push 통과] 5대 거버넌스 문서 동기화 및 15개 단위 테스트 전수 통과 확인.')
+    print('✅ [Pre-Push 통과] 5대 거버넌스 문서 동기화 및 전체 단위 테스트 전수 통과 확인.')
     return 0
 
 if __name__ == '__main__':

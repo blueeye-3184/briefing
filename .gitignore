@@ -17,3 +17,6 @@ ENV/
 log list/
 loglist.txt
 inspect_notion.py
+
+# Local-only governance/security material (may contain credentials)
+/01_Standard_Procedures/

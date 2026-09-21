@@ -2,7 +2,10 @@ import os
 import time
 import random
 import html
+import re
+import unicodedata
 import requests
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple, cast
 from google import genai # type: ignore
@@ -22,11 +25,26 @@ SLACK_WEBHOOK_URL: Optional[str] = os.environ.get('SLACK_WEBHOOK_URL')
 # KST (UTC+9) 설정
 KST: timezone = timezone(timedelta(hours=9))
 
+# 브리핑 품질 계약
+TARGET_PAPER_COUNT: int = 10
+TARGET_BODY_MIN_CHARS: int = 9_000
+TARGET_BODY_MAX_CHARS: int = 11_000
+MAX_INPUT_TOKENS: int = 120_000
+MAX_OUTPUT_TOKENS: int = 12_000
+NOTION_RICH_TEXT_LIMIT: int = 2_000
+NOTION_SAFE_TEXT_LIMIT: int = 1_800
+NOTION_REQUEST_BLOCK_LIMIT: int = 100
+NOTION_OPERATIONAL_BLOCK_LIMIT: int = 90
+
+OA_LICENSE_PREFIXES: Tuple[str, ...] = (
+    "cc-by", "cc0", "public-domain", "pd", "open-government"
+)
+
 # ==========================================
 # Domain Layer
 # ==========================================
 class AcademicPaper:
-    """공인 학술 DB에서 검증된 100% 피어리뷰 오픈액세스 논문 엔티티"""
+    """엄격한 메타데이터 게이트를 통과한 피어리뷰 OA 논문 엔티티."""
     def __init__(
         self,
         title: str,
@@ -35,7 +53,14 @@ class AcademicPaper:
         year: Optional[int],
         doi: Optional[str],
         oa_url: str,
-        abstract: str
+        abstract: str,
+        openalex_id: Optional[str] = None,
+        source_type: Optional[str] = None,
+        oa_version: Optional[str] = None,
+        oa_license: Optional[str] = None,
+        crossref_type: Optional[str] = None,
+        title_verified: bool = False,
+        is_retracted: bool = False,
     ) -> None:
         self.title = title
         self.authors = authors
@@ -44,41 +69,67 @@ class AcademicPaper:
         self.doi = doi
         self.oa_url = oa_url
         self.abstract = abstract
+        self.openalex_id = openalex_id
+        self.source_type = source_type
+        self.oa_version = oa_version
+        self.oa_license = oa_license
+        self.crossref_type = crossref_type
+        self.title_verified = title_verified
+        self.is_retracted = is_retracted
+
+    @property
+    def strict_eligibility_passed(self) -> bool:
+        """채택 논문에 적용하는 보수적 OA/피어리뷰 대리 검증 계약."""
+        license_value = (self.oa_license or "").lower()
+        return all((
+            bool(self.doi),
+            bool(self.oa_url),
+            bool(self.abstract),
+            self.source_type == "journal",
+            self.oa_version in {"publishedVersion", "acceptedVersion"},
+            any(license_value.startswith(prefix) for prefix in OA_LICENSE_PREFIXES),
+            self.crossref_type == "journal-article",
+            self.title_verified,
+            not self.is_retracted,
+        ))
 
     @staticmethod
-    def format_reference_section(papers: List['AcademicPaper']) -> str:
-        """100% 검증된 서지정보 기반 참고문헌 및 원문 링크 섹션 생성"""
+    def format_reference_section(
+        papers: List['AcademicPaper'],
+        target_count: int = TARGET_PAPER_COUNT,
+    ) -> str:
+        """검증 논문만 한 편당 한 줄로 렌더링하고 결손을 투명하게 공시."""
         if not papers:
             return (
                 "\n\n---\n"
-                "## ⚠️ 학술 연구 자료 검색 및 인용 안내 (Abstention Notice)\n"
-                "- **검색 결과**: 글로벌 공인 학술 DB(OpenAlex/Crossref) 검색 결과, 금일 세부 주제에 부합하는 **100% 피어리뷰 심사 통과 오픈액세스(Open Access) 학술지 논문**이 발견되지 않았습니다.\n"
-                "- **무결성 조치**: 허위 학술 자료(가짜 저자, 가짜 논문명, 가짜 DOI)의 생성 및 환각(Hallucination)을 원천 차단하기 위해 가상 인용을 일체 배제하였습니다.\n"
-                "- **분석 근거**: 본 리포트는 공공 기술 가이드라인, 산업계 실무 표준 지침 및 정책 동향을 기반으로 객관적으로 작성되었습니다."
+                "## ⚠️ UNKNOWN / DEFICIT REPORT — 적격 학술자료 부재\n"
+                f"- **검색 결과**: 목표 {target_count}편 중 엄격한 OA·피어리뷰 메타데이터 게이트를 모두 통과한 논문은 0편입니다.\n"
+                "- **검증 계약**: DOI와 Crossref journal-article 유형·제목 일치, OpenAlex journal source, accepted/published version, 공개 라이선스, OA URL, 초록, 비철회 상태를 모두 요구했습니다.\n"
+                "- **무결성 조치**: 논문을 임의로 보충하지 않았으며, 학술논문에 근거한 주장과 가상 참고문헌을 배제했습니다.\n"
+                "- **작성 범위**: 공개된 공공 가이드라인·표준·정책 등 비학술 1차 자료의 한계를 명시한 실무 분석만 제공합니다."
             )
 
         lines = [
             "\n\n---\n",
-            "## 📚 100% 피어리뷰 & 오픈액세스(Open Access) 검증 참고문헌\n",
-            "> 본 리포트에 인용된 모든 논문은 공인 학술 데이터베이스(OpenAlex / Crossref)를 통해 **피어리뷰 심사를 통과한 정규 학술지 논문(학위논문 배제)**임이 전수 검증되었으며, 무료 전문 열람이 가능한 **오픈액세스(Open Access)** 자료입니다.\n"
+            "## 📚 엄격 적격성 게이트 통과 피어리뷰 오픈액세스 참고문헌\n",
+            "> 아래 채택 논문 100%는 동일한 자동 검증 계약을 통과했습니다. 이는 메타데이터 기반 적격성 판정이며 심사 내용의 학문적 품질을 절대 보증한다는 뜻은 아닙니다.\n"
         ]
+
+        if len(papers) < target_count:
+            lines.append(
+                f"> ⚠️ **자료 결손**: 목표 {target_count}편 중 {len(papers)}편만 적격 판정을 받았습니다. "
+                "부족분을 비검증 자료로 채우지 않았습니다.\n"
+            )
 
         for idx, p in enumerate(papers, 1):
             author_str = ", ".join(p.authors) if p.authors else "저자 미상"
             year_str = f"({p.year})" if p.year else ""
             doi_link = f"[{p.doi}]({p.doi})" if p.doi else "DOI 미발급"
             oa_link = f"[무료 전문 열람 (Open Access)]({p.oa_url})" if p.oa_url else "열람 링크 없음"
-
-            lines.append(f"### {idx}. {p.title}")
-            lines.append(f"- **저자**: {author_str}")
-            lines.append(f"- **학술지**: {p.journal} {year_str}")
-            lines.append(f"- **DOI**: {doi_link}")
-            lines.append(f"- **원문 링크**: {oa_link}")
-            if p.abstract:
-                clean_abs = p.abstract.strip()
-                snippet = clean_abs[:300] + ("..." if len(clean_abs) > 300 else "")
-                lines.append(f"- **검증된 연구 초록 요약**: {snippet}")
-            lines.append("")
+            lines.append(
+                f"{idx}. **{p.title}** — {author_str}; {p.journal} {year_str}; "
+                f"DOI: {doi_link}; {oa_link}; license={p.oa_license}; version={p.oa_version}."
+            )
 
         return "\n".join(lines)
 
@@ -146,69 +197,109 @@ class BriefingReport:
 # Infrastructure Layer
 # ==========================================
 class AcademicProvider:
-    """OpenAlex & Crossref 기반 100% 피어리뷰 & 오픈액세스(OA) 논문 수집기"""
+    """OpenAlex 후보를 Crossref와 교차 검증하는 엄격한 OA 논문 수집기."""
     def __init__(self, email: str = "blueeye.research@gmail.com") -> None:
         self.headers: Dict[str, str] = {
-            "User-Agent": f"BriefingAuto/8.0 (mailto:{email})"
+            "User-Agent": f"BriefingAuto/9.0 (mailto:{email})"
         }
+        self.last_audit: Dict[str, Any] = {}
 
-    def search_peer_reviewed_oa_papers(self, keywords: List[str], max_papers: int = 3) -> List[AcademicPaper]:
+    @staticmethod
+    def _normalize_title(value: str) -> str:
+        value = html.unescape(unicodedata.normalize("NFKC", value or ""))
+        return re.sub(r"\s+", " ", value).strip().casefold()
+
+    def search_peer_reviewed_oa_papers(
+        self,
+        keywords: List[str],
+        max_papers: int = TARGET_PAPER_COUNT,
+    ) -> List[AcademicPaper]:
         """
-        주어진 키워드 목록을 순차적으로 검색하여 피어리뷰 심사를 통과하고 오픈액세스로 열람 가능한 논문 수집.
-        학위논문(dissertation), 단행본 등은 원천 필터링(type:article).
+        모든 키워드의 후보를 합친 뒤 DOI 중복을 제거하고 엄격 검증을 통과한
+        논문만 최대 max_papers편 반환한다. 목표 수를 채우기 위해 부적격 자료를
+        포함하지 않는다.
         """
+        rejection_reasons: Counter[str] = Counter()
+        candidates: List[AcademicPaper] = []
+        per_query = max(max_papers * 2, 20)
+
         for kw in keywords:
-            papers = self._search_single_query(kw, max_papers)
-            if papers:
-                return papers
-        return []
+            papers, rejected = self._search_single_query(kw, per_query)
+            candidates.extend(papers)
+            rejection_reasons.update(rejected)
 
-    def _search_single_query(self, query: str, max_papers: int) -> List[AcademicPaper]:
-        # OpenAlex API 호출 (오픈액세스 is_oa:true, 정규 학술지 논문 type:article 필터 적용)
+        unique_candidates: List[AcademicPaper] = []
+        seen: set[str] = set()
+        for paper in candidates:
+            dedupe_key = (paper.doi or self._normalize_title(paper.title)).lower()
+            if dedupe_key in seen:
+                rejection_reasons["duplicate"] += 1
+                continue
+            seen.add(dedupe_key)
+            unique_candidates.append(paper)
+
+        eligible: List[AcademicPaper] = []
+        for paper in unique_candidates:
+            verified, reason = self._verify_crossref(paper)
+            if verified is None:
+                rejection_reasons[reason] += 1
+                continue
+            eligible.append(verified)
+            if len(eligible) >= max_papers:
+                break
+
+        self.last_audit = {
+            "queries": list(keywords),
+            "raw_candidates": len(candidates),
+            "unique_candidates": len(unique_candidates),
+            "eligible_count": len(eligible),
+            "target_count": max_papers,
+            "rejections": dict(sorted(rejection_reasons.items())),
+        }
+        return eligible
+
+    def _search_single_query(
+        self,
+        query: str,
+        max_papers: int,
+    ) -> Tuple[List[AcademicPaper], Counter[str]]:
+        # 후보 단계에서도 OA, article, journal, abstract, 비철회를 요구한다.
         url: str = (
             f"https://api.openalex.org/works?"
             f"search={requests.utils.quote(query)}&"
-            f"filter=is_oa:true,type:article&"
-            f"per-page={max_papers}"
+            "filter=open_access.is_oa:true,type:article,is_retracted:false,"
+            "primary_location.source.type:journal,has_abstract:true&"
+            f"per_page={max_papers}"
         )
+        rejected: Counter[str] = Counter()
         try:
             res = requests.get(url, headers=self.headers, timeout=10)
             if res.status_code != 200:
                 print(f"[경고] OpenAlex API 응답 오류 ({res.status_code}): {res.text[:150]}")
-                return []
+                rejected["openalex_http_error"] += 1
+                return [], rejected
             data: Dict[str, Any] = res.json()
         except Exception as e:
             print(f"[경고] OpenAlex API 호출 실패: {e}")
-            return []
+            rejected["openalex_request_error"] += 1
+            return [], rejected
 
         raw_results: Any = data.get('results')
         if not isinstance(raw_results, list):
-            return []
+            rejected["openalex_invalid_payload"] += 1
+            return [], rejected
 
         papers: List[AcademicPaper] = []
         for r in raw_results:
             if not isinstance(r, dict):
+                rejected["invalid_record"] += 1
                 continue
 
             doi: Optional[str] = r.get('doi')
             title: str = r.get('title') or "제목 정보 없음"
-
-            # Crossref 조회를 통한 원문 한국어 제목 보강 (DOI가 있는 경우)
-            if doi and "doi.org/" in doi:
-                raw_doi: str = doi.split("doi.org/")[-1]
-                try:
-                    c_res = requests.get(
-                        f"https://api.crossref.org/works/{raw_doi}",
-                        headers=self.headers,
-                        timeout=4
-                    )
-                    if c_res.status_code == 200:
-                        c_data = c_res.json()
-                        orig_titles = c_data.get('message', {}).get('original-title')
-                        if orig_titles and isinstance(orig_titles, list) and len(orig_titles) > 0 and orig_titles[0]:
-                            title = f"{orig_titles[0]} ({title})"
-                except Exception:
-                    pass
+            if not doi or "doi.org/" not in doi:
+                rejected["missing_doi"] += 1
+                continue
 
             authorships: Any = r.get('authorships', [])
             authors: List[str] = []
@@ -222,17 +313,35 @@ class AcademicProvider:
             year: Optional[int] = r.get('publication_year')
             primary_loc: Any = r.get('primary_location') or {}
             journal: str = "학술지"
+            source_type: Optional[str] = None
             if isinstance(primary_loc, dict):
                 source_info = primary_loc.get('source')
                 if isinstance(source_info, dict) and source_info.get('display_name'):
                     journal = source_info.get('display_name')
+                    source_type = source_info.get('type')
 
-            oa_info: Any = r.get('open_access') or {}
-            oa_url: str = ""
-            if isinstance(oa_info, dict) and oa_info.get('oa_url'):
-                oa_url = oa_info.get('oa_url')
-            elif doi:
-                oa_url = doi
+            if source_type != "journal":
+                rejected["not_journal_source"] += 1
+                continue
+
+            best_oa: Any = r.get('best_oa_location') or {}
+            if not isinstance(best_oa, dict) or not best_oa.get('is_oa'):
+                rejected["missing_oa_location"] += 1
+                continue
+            oa_url: str = best_oa.get('pdf_url') or best_oa.get('landing_page_url') or ""
+            oa_version: Optional[str] = best_oa.get('version')
+            oa_license: Optional[str] = best_oa.get('license')
+
+            if not oa_url:
+                rejected["missing_oa_url"] += 1
+                continue
+            if oa_version not in {"publishedVersion", "acceptedVersion"}:
+                rejected["unverified_peer_review_version"] += 1
+                continue
+            license_value = (oa_license or "").lower()
+            if not any(license_value.startswith(prefix) for prefix in OA_LICENSE_PREFIXES):
+                rejected["missing_open_license"] += 1
+                continue
 
             # Inverted index로부터 초록 복원
             inv: Any = r.get('abstract_inverted_index')
@@ -244,6 +353,10 @@ class AcademicProvider:
                 word_list.sort(key=lambda x: x[0])
                 abstract = " ".join(w for _, w in word_list)
 
+            if not abstract.strip():
+                rejected["missing_abstract"] += 1
+                continue
+
             title = html.unescape(title)
             papers.append(AcademicPaper(
                 title=title,
@@ -252,10 +365,53 @@ class AcademicProvider:
                 year=year,
                 doi=doi,
                 oa_url=oa_url,
-                abstract=abstract
+                abstract=abstract,
+                openalex_id=r.get('id'),
+                source_type=source_type,
+                oa_version=oa_version,
+                oa_license=oa_license,
+                is_retracted=bool(r.get('is_retracted')),
             ))
 
-        return papers
+        return papers, rejected
+
+    def _verify_crossref(
+        self,
+        paper: AcademicPaper,
+    ) -> Tuple[Optional[AcademicPaper], str]:
+        """Crossref 유형과 제목이 OpenAlex 레코드와 일치할 때만 채택."""
+        if not paper.doi or "doi.org/" not in paper.doi:
+            return None, "missing_doi"
+
+        raw_doi = paper.doi.split("doi.org/", 1)[-1]
+        try:
+            response = requests.get(
+                f"https://api.crossref.org/works/{raw_doi}",
+                headers=self.headers,
+                timeout=8,
+            )
+            if response.status_code != 200:
+                return None, "crossref_http_error"
+            message = response.json().get("message", {})
+        except Exception:
+            return None, "crossref_request_error"
+
+        if not isinstance(message, dict):
+            return None, "crossref_invalid_payload"
+        if message.get("type") != "journal-article":
+            return None, "crossref_not_journal_article"
+
+        titles = message.get("title") or []
+        if not isinstance(titles, list) or not titles or not isinstance(titles[0], str):
+            return None, "crossref_missing_title"
+        if self._normalize_title(titles[0]) != self._normalize_title(paper.title):
+            return None, "doi_title_mismatch"
+
+        paper.crossref_type = "journal-article"
+        paper.title_verified = True
+        if not paper.strict_eligibility_passed:
+            return None, "strict_eligibility_failed"
+        return paper, "eligible"
 
 
 class GeminiProvider:
@@ -288,12 +444,14 @@ class GeminiProvider:
                 print(f"[시도] {model_name} 모델로 리포트 생성 중...")
                 main_body: str = self._call_api(model_name, topic, papers)
 
-                # 100% 검증된 참고문헌(또는 부재 시 Abstention 안내) 섹션 자동 부착
-                ref_section: str = AcademicPaper.format_reference_section(papers or [])
+                # 엄격 적격성 게이트를 통과한 참고문헌과 결손 공시 자동 부착
+                ref_section: str = AcademicPaper.format_reference_section(
+                    papers or [], TARGET_PAPER_COUNT
+                )
 
                 # 거버넌스 검증 배지 (실시간 무결성 증명)
                 peer_review_badge = (
-                    f"PASSED ({len(papers)} Open Access Papers Verified via OpenAlex/Crossref)"
+                    f"PASSED ({len(papers)}/{TARGET_PAPER_COUNT} papers passed the strict metadata gate)"
                     if papers else "ABSTENTION APPLIED (No OA Papers Found - Fake Citation Prevented)"
                 )
                 footer = (
@@ -335,7 +493,7 @@ class GeminiProvider:
         client: Any = self.client
 
         if papers:
-            # 1. 실제 수집된 피어리뷰 오픈액세스 논문 데이터를 바탕으로 본문 작성
+            # 원문 전문은 입력하지 않고 서지정보와 초록만 제공한다.
             paper_contexts = []
             for idx, p in enumerate(papers, 1):
                 author_str = ", ".join(p.authors) if p.authors else "저자 미상"
@@ -348,17 +506,26 @@ class GeminiProvider:
                     f"- 연구 초록(Abstract): {p.abstract or '초록 원문 없음'}\n"
                 )
             context_str = "\n".join(paper_contexts)
+            deficit_notice = (
+                f"적격 논문은 목표 {TARGET_PAPER_COUNT}편 중 {len(papers)}편입니다. "
+                "부족분을 임의 자료로 채우지 말고 서론에 자료 결손을 명시하십시오."
+                if len(papers) < TARGET_PAPER_COUNT else
+                f"적격 논문 {TARGET_PAPER_COUNT}편이 모두 확보되었습니다."
+            )
 
             prompt = (
                 f"당신은 공인 학술 연구를 심층 분석하여 전문가 브리핑을 작성하는 수석 연구위원입니다.\n\n"
                 f"주제: [{topic}]\n\n"
-                f"[공인 학술 DB에서 검증 수집된 100% 피어리뷰 오픈액세스 논문 데이터]\n"
+                f"[엄격 적격성 게이트를 통과한 피어리뷰 오픈액세스 논문의 서지정보와 초록]\n"
                 f"{context_str}\n\n"
+                f"[자료 충족 상태] {deficit_notice}\n\n"
                 f"다음 지침을 한 치의 오차도 없이 엄격히 준수하여 학술적 심층 분석 리포트를 작성하십시오:\n"
-                f"1. 반드시 위 [공인 학술 DB에서 검증 수집된 논문 데이터]에 제공된 실제 논문의 연구 내용과 초록을 바탕으로 본문 전반에 걸쳐 유기적이고 심층적으로 분석하십시오.\n"
+                f"1. 위에 제공된 서지정보와 초록만 사용하십시오. 논문 원문을 읽었다고 표현하거나 초록에 없는 방법·수치·결론을 추정하지 마십시오.\n"
                 f"2. 위 목록에 제공되지 않은 임의의 다른 가짜 논문, 가짜 저자, 가짜 서지정보를 지어내거나 인용하는 행위를 100% 엄격히 금지합니다.\n"
                 f"3. 보고서 본문 하단에 별도의 '참고문헌' 목록이나 URL 링크를 직접 작성하지 마십시오. (참고문헌과 검증 링크는 시스템 파이프라인에서 자동으로 결합됩니다).\n"
-                f"4. 분량은 공백 포함 4,000~5,000자 내외로 실무자와 연구자가 즉시 활용할 수 있는 깊이 있는 학술적 통찰과 실무 적용 방안을 제시하십시오."
+                f"4. 본문은 참고문헌을 제외하고 공백 포함 {TARGET_BODY_MIN_CHARS:,}~{TARGET_BODY_MAX_CHARS:,}자로 작성하십시오.\n"
+                f"5. 검증 가능한 주장에는 [논문 1]처럼 제공된 논문 번호를 붙이고, 근거가 약하면 '초록만으로 확인 불가'라고 명시하십시오.\n"
+                f"6. 실무자가 바로 사용할 수 있도록 요약, 근거 분석, 상충/한계, 적용 방안, 확인이 필요한 항목을 구분하십시오."
             )
         else:
             # 2. 논문 미발견 시: 환각 방지를 위한 가상 인용 금지 및 실무 표준/정책 분석 프롬프트
@@ -370,16 +537,38 @@ class GeminiProvider:
                 f"허위 학술 자료(가짜 논문명, 가짜 저자명, 가짜 학술지 인용) 생성을 엄격히 금지합니다.\n"
                 f"존재하지 않는 가상의 학술 논문을 절대로 지어내어 인용하지 마시고, 공공 가이드라인, 표준 시방서, 제도적 동향, 실무 프로세스 관점에서 전문적인 분석 리포트를 작성하십시오.\n"
                 f"본문 하단에 가짜 참고문헌 섹션을 작성하지 마십시오.\n"
-                f"분량은 공백 포함 4,000~5,000자 내외로 깊이 있게 구성하십시오."
+                f"서론에 '적격 피어리뷰 OA 논문 0편'과 학술적 근거의 한계를 명시하십시오.\n"
+                f"분량은 참고문헌을 제외하고 공백 포함 {TARGET_BODY_MIN_CHARS:,}~{TARGET_BODY_MAX_CHARS:,}자로 구성하십시오."
             )
+
+        token_counter = getattr(client.models, "count_tokens", None)
+        if callable(token_counter):
+            token_result = token_counter(model=model_name, contents=prompt)
+            input_tokens = getattr(token_result, "total_tokens", None)
+            if isinstance(input_tokens, int):
+                print(f"[정보] Gemini 입력 토큰: {input_tokens:,}")
+                if input_tokens > MAX_INPUT_TOKENS:
+                    raise ValueError(
+                        f"입력 토큰 {input_tokens:,}이 운영 상한 {MAX_INPUT_TOKENS:,}을 초과했습니다."
+                    )
 
         response = client.models.generate_content(
             model=model_name,
-            contents=prompt
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                max_output_tokens=MAX_OUTPUT_TOKENS,
+            ),
         )
         text_val = response.text
         if not isinstance(text_val, str) or not text_val:
             raise ValueError(f"{model_name} 모델로부터 유효한 텍스트 응답을 받지 못했습니다.")
+        body_length = len(text_val.strip())
+        if not TARGET_BODY_MIN_CHARS <= body_length <= TARGET_BODY_MAX_CHARS:
+            raise ValueError(
+                f"본문 길이 {body_length:,}자가 허용 범위 "
+                f"{TARGET_BODY_MIN_CHARS:,}~{TARGET_BODY_MAX_CHARS:,}자를 벗어났습니다."
+            )
         return text_val
 
 class NotionPublisher:
@@ -396,7 +585,9 @@ class NotionPublisher:
     def request(self, method: str, url: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if self.token is None:
             raise ValueError("NOTION_TOKEN이 설정되지 않았습니다.")
-        res: requests.Response = requests.request(method, url, headers=self.headers, json=data)
+        res: requests.Response = requests.request(
+            method, url, headers=self.headers, json=data, timeout=30
+        )
         try:
             res.raise_for_status()
         except requests.exceptions.HTTPError as e:
@@ -469,10 +660,57 @@ class NotionPublisher:
                         return cast(str, f_id) if isinstance(f_id, str) else None
         return None
 
-    def publish_report(self, parent_id: str, report: BriefingReport) -> None:
-        """마크다운을 Notion 블록으로 변환하여 발행"""
+    @staticmethod
+    def _split_text_safely(
+        text: str,
+        limit: int = NOTION_SAFE_TEXT_LIMIT,
+    ) -> List[str]:
+        """2,000자 제한보다 여유 있게 문장/공백 경계에서 분할."""
+        if limit > NOTION_RICH_TEXT_LIMIT:
+            raise ValueError("Notion 안전 분할값은 2,000자를 초과할 수 없습니다.")
+        chunks: List[str] = []
+        remaining = text.strip()
+        while len(remaining) > limit:
+            cut = max(
+                remaining.rfind("다. ", 0, limit),
+                remaining.rfind(". ", 0, limit),
+                remaining.rfind(" ", 0, limit),
+            )
+            if cut < limit // 2:
+                cut = limit
+            else:
+                cut += 1
+            chunks.append(remaining[:cut].strip())
+            remaining = remaining[cut:].strip()
+        if remaining:
+            chunks.append(remaining)
+        return chunks
+
+    @staticmethod
+    def _rich_text(text: str) -> List[Dict[str, Any]]:
+        """Markdown 링크를 Notion hyperlink rich text로 변환."""
+        nodes: List[Dict[str, Any]] = []
+        cursor = 0
+        link_pattern = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
+        for match in link_pattern.finditer(text):
+            if match.start() > cursor:
+                nodes.append({"type": "text", "text": {"content": text[cursor:match.start()]}})
+            nodes.append({
+                "type": "text",
+                "text": {
+                    "content": match.group(1),
+                    "link": {"url": match.group(2)},
+                },
+            })
+            cursor = match.end()
+        if cursor < len(text):
+            nodes.append({"type": "text", "text": {"content": text[cursor:]}})
+        return nodes or [{"type": "text", "text": {"content": text}}]
+
+    def markdown_to_notion_blocks(self, content: str) -> List[Dict[str, Any]]:
+        """지원 Markdown을 안전한 Notion 블록으로 변환하고 블록 예산을 검증."""
         blocks: List[Dict[str, Any]] = []
-        for line in report.content.split('\n'):
+        for line in content.split('\n'):
             raw: str = line.strip()
             if not raw: continue
             
@@ -482,25 +720,43 @@ class NotionPublisher:
             elif raw.startswith('##'): b_t = "heading_2"; txt = raw[2:].strip()
             elif raw.startswith('#'): b_t = "heading_1"; txt = raw[1:].strip()
             elif raw.startswith(('- ', '* ')): b_t = "bulleted_list_item"; txt = raw[2:].strip()
-            elif raw.startswith(('1. ', '2. ', '3. ', '4. ', '5. ')): b_t = "numbered_list_item"; txt = raw[3:].strip()
+            elif re.match(r'^\d+\.\s+', raw):
+                b_t = "numbered_list_item"
+                txt = re.sub(r'^\d+\.\s+', '', raw, count=1)
+            elif raw == '---':
+                blocks.append({"object": "block", "type": "divider", "divider": {}})
+                continue
 
             if not txt: continue # 텍스트 내용이 없으면 블록 생성 건너뜀
 
-            limit: int = 2000
-            chunks: List[str] = [txt[i:i + limit] for i in range(0, len(txt), limit)]
-            for chunk in chunks:
+            chunks = self._split_text_safely(txt)
+            for chunk_index, chunk in enumerate(chunks):
                 if not chunk.strip(): continue # 공백만 있는 청크 제외
+                chunk_type = b_t if chunk_index == 0 or b_t in {
+                    "bulleted_list_item", "numbered_list_item"
+                } else "paragraph"
                 blocks.append({
                     "object": "block",
-                    "type": b_t,
-                    b_t: {"rich_text": [{"text": {"content": chunk}}]}
+                    "type": chunk_type,
+                    chunk_type: {"rich_text": self._rich_text(chunk)}
                 })
 
-        # 노션 API는 한 번에 최대 100개의 블록만 생성 가능
+        if len(blocks) > NOTION_OPERATIONAL_BLOCK_LIMIT:
+            raise ValueError(
+                f"Notion 블록 {len(blocks)}개가 운영 상한 "
+                f"{NOTION_OPERATIONAL_BLOCK_LIMIT}개를 초과했습니다."
+            )
+        if len(blocks) > NOTION_REQUEST_BLOCK_LIMIT:
+            raise ValueError("Notion 요청당 100블록 제한을 초과했습니다.")
+        return blocks
+
+    def publish_report(self, parent_id: str, report: BriefingReport) -> None:
+        """검증된 블록 예산 안에서 리포트를 Notion에 발행."""
+        blocks = self.markdown_to_notion_blocks(report.content)
         data: Dict[str, Any] = {
             "parent": {"page_id": parent_id},
             "properties": {"title": {"title": [{"text": {"content": report.page_title}}]}},
-            "children": blocks[:100]
+            "children": blocks,
         }
         self.request("POST", "https://api.notion.com/v1/pages", data)
 
@@ -549,9 +805,15 @@ class BriefingApplicationService:
         print(f"[정보] 학술 DB 검색 키워드: {keywords}")
 
         try:
-            # 1. 공인 학술 DB에서 100% 피어리뷰 오픈액세스(OA) 논문 실측 수집
-            papers: List[AcademicPaper] = self.academic.search_peer_reviewed_oa_papers(keywords, max_papers=3)
-            print(f"[정보] 수집된 피어리뷰 OA 논문 수: {len(papers)}건")
+            # 1. 모든 키워드에서 후보를 수집하고 엄격 적격성 게이트로 최대 10편 채택
+            papers: List[AcademicPaper] = self.academic.search_peer_reviewed_oa_papers(
+                keywords, max_papers=TARGET_PAPER_COUNT
+            )
+            print(
+                f"[정보] 엄격 적격성 게이트 통과 논문: "
+                f"{len(papers)}/{TARGET_PAPER_COUNT}건"
+            )
+            print(f"[감사] 학술 검색 결과: {self.academic.last_audit}")
             for p in papers:
                 print(f"  - {p.title} ({p.year}) | 저널: {p.journal} | OA: {p.oa_url}")
 
@@ -566,7 +828,8 @@ class BriefingApplicationService:
             self.notion.publish_report(w_id, report)
             print(f"[성공] 노션 저장 완료")
             self.slack.notify(
-                f"오늘자 브리핑 저장 완료: *{report.page_title}* (OA 피어리뷰 논문 {len(papers)}건 검증 인용)",
+                f"오늘자 브리핑 저장 완료: *{report.page_title}* "
+                f"(엄격 적격성 게이트 통과 OA 논문 {len(papers)}/{TARGET_PAPER_COUNT}건)",
                 "success"
             )
         except Exception as e:

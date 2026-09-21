@@ -106,7 +106,7 @@ def update_data_collection_log(file_path, today_str, version, desc):
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
     
-    row = f"| {today_str} | Release Sync | **SUCCESS** | Passed (15 Tests, SOP 3 Sync) | [{version}] {desc} |\n"
+    row = f"| {today_str} | Release Sync | **SUCCESS** | Passed (Full Test Suite, SOP 3 Sync) | [{version}] {desc} |\n"
     anchor = "| :--- | :--- | :--- | :--- | :--- |\n"
     if anchor in content:
         updated = content.replace(anchor, anchor + row, 1)
