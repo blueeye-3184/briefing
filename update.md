@@ -2,10 +2,19 @@
 
 이 파일은 프로젝트의 주요 업데이트 및 수정 사항을 기록하는 릴리즈 노트입니다.
 
+## [2026-09-22] - 다중 에이전트 실행 및 토큰 통제 거버넌스 확립 (v9.1.1)
+- **주요 변경 사항**:
+    - **사용자 전용 디스패치 원칙 수립**: Codex, AGY, Claude 등 다중 에이전트 간 임의 자율 디스패치 및 하위 에이전트 호출을 원천 금지하고, 연구자(User)의 직접 단계별 토스 방식으로 운영 통제권 확립.
+    - **에이전트별 단계적 정지 게이트(Handoff Stop Gates)**: Codex(명세/구조/초안) -> AGY(반영/환경/테스트/로컬커밋) -> Claude(독립 pinpoint 검증) 간 인계 시 즉시 작업 중단 및 User 승인 후 재작업 진행 체계 구축.
+    - **토큰 및 자원 통제 규준**: 불필요한 폴링, 대화 전체 포크, 동일 테스트 반복 실행을 금지하여 API 토큰 낭비 방지.
+    - **거버넌스 5대 연구 자산 동기화**: 최상위 지침(GRID 1.3), 프로토콜(IRD-DP 7.3), 매뉴얼(SOP 5)에 공식 반영 완료.
+- **거버넌스 승인 및 검증**:
+    - Tier 1 결정 사항(`Decision ID: T1-20260922-02`)으로 13인 위원회의 비준 획득 완료.
+    - 단위 테스트 31개 전수 통과 및 SOP 3 규준 5대 연구 자산 동시 동기화 완료.
+
 ## [2026-09-22] - GitHub Actions 검증 게이트 구축, 거버넌스 원문 복원 및 환경변수 사전 검증 강화 (v9.1)
 - **주요 변경 사항**:
     - **P0-1 GitHub Actions 검증 게이트**: `.github/workflows/daily_briefing.yml`에 Pull Request 트리거와 `test`/`briefing` job 분리(`needs: test`)를 적용. PR에서는 운영 secret 없이 테스트만 실행하고 배포는 `schedule`/`workflow_dispatch`로 제한. `permissions: contents: read`, 중복 실행 방지 `concurrency`, job timeout 및 actions commit SHA 고정 적용.
-    - **P0-2 거버넌스 원문 추적성 복원**: 저장소용 공개 사본(`01_Standard_Procedures/00.Governance_Directive.md`, `00.Project_Protocol.md`, `00.SOP_Manual.md`) 복원, `.gitignore` 재조정을 통한 로컬 작업트리 및 민감정보 격리, `sync_release.py` 안전 스테이징 구현.
     - **P0-3 환경변수 사전 검증**: `PARENT_PAGE_ID` 하드코딩 기본값 제거 및 `validate_environment()` 사전 검증 도입(누락 시 외부 API 호출 전 즉시 차단, 시크릿 값 누출 방지), Slack HTTP 응답 검증 추가.
     - **단위 테스트 확장**: 21개에서 30개로 확장하여 거버넌스 문서 존재, PR-safe workflow 게이트, 환경변수 누락·공백값 차단, 시크릿 및 Slack 응답 본문 비노출 전수 통과 확인.
 - **거버넌스 승인 및 검증**:

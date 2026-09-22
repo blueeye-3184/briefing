@@ -818,7 +818,7 @@ class BriefingApplicationService:
 
     def run_daily_briefing(self) -> None:
         validate_environment()
-        if not self.parent_page_id:
+        if not self.parent_page_id or not self.parent_page_id.strip():
             raise ValueError("필수 환경 변수가 누락되었습니다: PARENT_PAGE_ID")
 
         day_name, topic = BriefingSchedule.get_today_topic()

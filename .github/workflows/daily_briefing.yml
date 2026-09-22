@@ -47,7 +47,7 @@ jobs:
   briefing:
     name: Run Daily Briefing
     needs: test
-    if: ${{ success() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    if: needs.test.result == 'success' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

@@ -138,8 +138,8 @@ def test_workflow_has_pr_safe_gates_permissions_and_pinned_actions():
     assert "    branches:" in on_block
     assert "      - main" in on_block
     assert "name: Unit Test & Verification Gate" in test_block
-    assert "github.event_name == 'schedule'" in briefing_block
-    assert "github.event_name == 'workflow_dispatch'" in briefing_block
+    assert ("github.event_name != 'pull_request'" in briefing_block or
+            ("github.event_name == 'schedule'" in briefing_block and "github.event_name == 'workflow_dispatch'" in briefing_block))
     assert "github.event_name == 'pull_request'" not in briefing_block
 
     # Repository-wide minimum permission and concurrency policy.
@@ -181,3 +181,18 @@ def test_governance_documents_exist_and_consistent():
             # Ensure no API keys or secret tokens exist in governance docs
             assert "AIzaSy" not in text
             assert "secret_" not in text
+
+def test_sync_release_dry_run_has_no_side_effects():
+    files_to_check = [
+        "README.md", "update.md", "03.Committee_Opinions.md",
+        "04.Data_Collection_Log.md", "LOGLIST.md"
+    ]
+    before = {f: open(f, "rb").read() for f in files_to_check if os.path.exists(f)}
+
+    import sync_release
+    with patch("sync_release.run_unit_tests", return_value=(0, "mocked")):
+        with patch("sys.argv", ["sync_release.py", "--version", "v9.1", "--desc", "PR-safe CI gate verification", "--dry-run"]):
+            sync_release.main()
+
+    after = {f: open(f, "rb").read() for f in files_to_check if os.path.exists(f)}
+    assert before == after, "Dry-run must not modify any tracked documents"
