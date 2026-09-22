@@ -197,11 +197,30 @@ def test_workflow_has_pr_safe_gates_permissions_and_pinned_actions():
 
 
 def test_workflow_execution_boundary_simulation():
-    def evaluate_condition(test_result: str, event_name: str, ref: str, default_branch: str) -> bool:
+    """Verify the briefing execution boundary logic matches the workflow file specification.
+
+    Schedule events run unconditionally on default branch in GitHub Actions (where
+    github.event.repository is empty). Manual workflow_dispatch requires matching default_branch.
+    """
+    workflow_path = os.path.join(".github", "workflows", "daily_briefing.yml")
+    assert os.path.exists(workflow_path)
+    with open(workflow_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    briefing_block = _indented_block(_indented_block(content, "jobs:"), "briefing:", indent=2)
+
+    # Assert structural safety directly from the actual YAML file
+    assert "github.event_name == 'schedule' ||" in briefing_block
+    assert "github.event_name == 'workflow_dispatch' &&" in briefing_block
+    assert "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)" in briefing_block
+
+    def evaluate_condition(test_result: str, event_name: str, ref: str, default_branch: str, has_repo_context: bool = True) -> bool:
+        repo_default = default_branch if has_repo_context else ""
         return (
             test_result == "success"
-            and (event_name == "schedule" or event_name == "workflow_dispatch")
-            and ref == f"refs/heads/{default_branch}"
+            and (
+                event_name == "schedule"
+                or (event_name == "workflow_dispatch" and ref == f"refs/heads/{repo_default}")
+            )
         )
 
     # 1. PR event -> always False
@@ -216,9 +235,9 @@ def test_workflow_execution_boundary_simulation():
     assert evaluate_condition("success", "workflow_dispatch", "refs/heads/main", "main")
     assert not evaluate_condition("failure", "workflow_dispatch", "refs/heads/main", "main")
 
-    # 4. Default branch schedule -> True only if test succeeded
-    assert evaluate_condition("success", "schedule", "refs/heads/main", "main")
-    assert not evaluate_condition("failure", "schedule", "refs/heads/main", "main")
+    # 4. Schedule event -> True even when github.event.repository is empty (GitHub Actions runtime behavior)
+    assert evaluate_condition("success", "schedule", "refs/heads/main", "main", has_repo_context=False)
+    assert not evaluate_condition("failure", "schedule", "refs/heads/main", "main", has_repo_context=False)
 
 def test_governance_documents_exist_and_consistent():
     gov_files = [
