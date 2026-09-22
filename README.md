@@ -37,7 +37,7 @@
 | 12 | **History Guardian** | 체크포인트 설정 및 데이터 보존 확인 | "컨텍스트 전이(Bleeding)" 및 "초기화 실패" 공격 |
 | 13 | **Security Officer** | 연구 윤리 준수 및 데이터 보안 감사 | "보안 취약" 및 "데이터 폐쇄성/윤리 결함" 타격 |
 
-## 🚀 주요 기능 및 인프라 (v9.1 Verified Pipeline Gate & Governance Baseline)
+## 🚀 주요 기능 및 인프라 (v9.2 Academic OpenAccess Architecture)
 - **GitHub Actions 2단계 검증 게이트**: Pull Request에서는 운영 secret 없이 `test` job만 실행하고, `schedule` 또는 수동 실행에서 테스트가 전수 통과한 경우에만 `briefing` job이 실행된다. `permissions: contents: read` 및 중복 실행 방지 `concurrency` 적용.
 - **사전 환경변수 무결성 검증**: `PARENT_PAGE_ID` 하드코딩 기본값을 제거하고, 필수 시크릿(`GEMINI_API_KEY`, `NOTION_TOKEN`, `PARENT_PAGE_ID`) 누락 시 외부 API 호출 전 즉시 차단 (시크릿 누출 방지).
 - **거버넌스 원문 추적성 복원**: 저장소용 공개 사본(`01_Standard_Procedures/00.*`)을 복원하고 로컬 작업트리 및 민감정보를 격리.
