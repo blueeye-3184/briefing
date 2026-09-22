@@ -1,4 +1,5 @@
 import os
+import requests
 import pytest
 from unittest.mock import MagicMock, patch
 import briefing_auto
@@ -120,6 +121,23 @@ def test_slack_notifier_checks_http_status(monkeypatch, capsys):
     assert "sensitive-response-body" not in captured.out
 
 
+def test_slack_notifier_exception_does_not_leak_secret_url(capsys):
+    dummy_url = "https://hooks.slack.invalid/services/DUMMY/SECRET/PATH"
+    notifier = SlackNotifier(dummy_url)
+
+    with patch("requests.post", side_effect=requests.exceptions.ConnectionError(f"Failed to connect to {dummy_url}")):
+        # Must not raise exception to caller
+        notifier.notify("Test Alert", "error")
+
+    captured = capsys.readouterr()
+    assert "[경고] 슬랙 알림 전송 실패: ConnectionError" in captured.out
+    assert "https://hooks.slack.invalid" not in captured.out
+    assert "DUMMY" not in captured.out
+    assert "SECRET" not in captured.out
+    assert "PATH" not in captured.out
+    assert not captured.err
+
+
 def test_workflow_has_pr_safe_gates_permissions_and_pinned_actions():
     workflow_path = os.path.join(".github", "workflows", "daily_briefing.yml")
     assert os.path.exists(workflow_path), "Workflow file must exist"
@@ -146,12 +164,22 @@ def test_workflow_has_pr_safe_gates_permissions_and_pinned_actions():
     assert "  contents: read" in permissions_block
     assert "  cancel-in-progress: false" in concurrency_block
 
-    # The deploy job is gated by tests and the test job receives no production secrets.
+    # Production concurrency must be strictly daily-briefing-production (independent of ref).
+    briefing_concurrency = _indented_block(briefing_block, "concurrency:", indent=4)
+    assert "group: daily-briefing-production" in briefing_concurrency
+    assert "cancel-in-progress: false" in briefing_concurrency
+
+    # The deploy job is restricted to default branch and gated by tests.
     assert "needs: test" in briefing_block
+    assert "github.event.repository.default_branch" in briefing_block
     assert "${{ secrets." not in test_block
     assert "GEMINI_API_KEY" not in test_block
     assert "NOTION_TOKEN" not in test_block
     assert "PARENT_PAGE_ID" not in test_block
+
+    # Every checkout step specifies fetch-depth: 1 explicitly.
+    assert "fetch-depth: 1" in test_block
+    assert "fetch-depth: 1" in briefing_block
 
     # Every action reference is pinned to a full commit SHA.
     action_refs = []
@@ -166,6 +194,31 @@ def test_workflow_has_pr_safe_gates_permissions_and_pinned_actions():
         assert all(char in "0123456789abcdef" for char in revision)
 
     assert "Pre-flight Secret Validation" in briefing_block
+
+
+def test_workflow_execution_boundary_simulation():
+    def evaluate_condition(test_result: str, event_name: str, ref: str, default_branch: str) -> bool:
+        return (
+            test_result == "success"
+            and (event_name == "schedule" or event_name == "workflow_dispatch")
+            and ref == f"refs/heads/{default_branch}"
+        )
+
+    # 1. PR event -> always False
+    assert not evaluate_condition("success", "pull_request", "refs/heads/main", "main")
+    assert not evaluate_condition("success", "pull_request", "refs/heads/agents/agy", "main")
+
+    # 2. Feature branch workflow_dispatch -> False
+    assert not evaluate_condition("success", "workflow_dispatch", "refs/heads/agents/agy", "main")
+    assert not evaluate_condition("success", "workflow_dispatch", "refs/heads/feature/test", "main")
+
+    # 3. Default branch workflow_dispatch -> True only if test succeeded
+    assert evaluate_condition("success", "workflow_dispatch", "refs/heads/main", "main")
+    assert not evaluate_condition("failure", "workflow_dispatch", "refs/heads/main", "main")
+
+    # 4. Default branch schedule -> True only if test succeeded
+    assert evaluate_condition("success", "schedule", "refs/heads/main", "main")
+    assert not evaluate_condition("failure", "schedule", "refs/heads/main", "main")
 
 def test_governance_documents_exist_and_consistent():
     gov_files = [

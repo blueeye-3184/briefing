@@ -796,7 +796,7 @@ class SlackNotifier:
             if not resp.ok:
                 print(f"[경고] 슬랙 알림 HTTP 오류 응답 ({resp.status_code})")
         except Exception as e:
-            print(f"[경고] 슬랙 알림 전송 실패: {e}")
+            print(f"[경고] 슬랙 알림 전송 실패: {type(e).__name__}")
 
 # ==========================================
 # Application Layer
