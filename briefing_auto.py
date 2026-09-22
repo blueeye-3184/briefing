@@ -19,8 +19,23 @@ load_dotenv()
 # [환경 변수]
 GEMINI_API_KEY: Optional[str] = os.environ.get('GEMINI_API_KEY')
 NOTION_TOKEN: Optional[str] = os.environ.get('NOTION_TOKEN')
-PARENT_PAGE_ID: str = os.environ.get('PARENT_PAGE_ID', '30da70ceb29b81f28bfde4bd8a03d3e0')
+PARENT_PAGE_ID: Optional[str] = os.environ.get('PARENT_PAGE_ID')
 SLACK_WEBHOOK_URL: Optional[str] = os.environ.get('SLACK_WEBHOOK_URL')
+
+def validate_environment() -> Dict[str, str]:
+    """애플리케이션 시작 전 필수 환경변수 일괄 검증.
+    누락된 변수명만 명시하며, 시크릿 값 자체는 예외 메시지에 포함하지 않음."""
+    required = ["GEMINI_API_KEY", "NOTION_TOKEN", "PARENT_PAGE_ID"]
+    values = {key: os.environ.get(key, "").strip() for key in required}
+    missing = [key for key, value in values.items() if not value]
+    if missing:
+        raise ValueError(f"필수 환경 변수가 누락되었습니다: {', '.join(missing)}")
+    return {
+        "GEMINI_API_KEY": values["GEMINI_API_KEY"],
+        "NOTION_TOKEN": values["NOTION_TOKEN"],
+        "PARENT_PAGE_ID": values["PARENT_PAGE_ID"],
+        "SLACK_WEBHOOK_URL": os.environ.get("SLACK_WEBHOOK_URL", ""),
+    }
 
 # KST (UTC+9) 설정
 KST: timezone = timezone(timedelta(hours=9))
@@ -777,7 +792,9 @@ class SlackNotifier:
             "text": f"{emoji} *[Briefing System]* {message}"
         }
         try:
-            requests.post(self.webhook_url, json=payload, timeout=10)
+            resp = requests.post(self.webhook_url, json=payload, timeout=10)
+            if not resp.ok:
+                print(f"[경고] 슬랙 알림 HTTP 오류 응답 ({resp.status_code})")
         except Exception as e:
             print(f"[경고] 슬랙 알림 전송 실패: {e}")
 
@@ -790,14 +807,20 @@ class BriefingApplicationService:
         gemini: GeminiProvider,
         notion: NotionPublisher,
         slack: SlackNotifier,
-        academic: Optional[AcademicProvider] = None
+        academic: Optional[AcademicProvider] = None,
+        parent_page_id: Optional[str] = None
     ) -> None:
         self.gemini = gemini
         self.notion = notion
         self.slack = slack
         self.academic = academic or AcademicProvider()
+        self.parent_page_id = parent_page_id or os.environ.get('PARENT_PAGE_ID')
 
     def run_daily_briefing(self) -> None:
+        validate_environment()
+        if not self.parent_page_id:
+            raise ValueError("필수 환경 변수가 누락되었습니다: PARENT_PAGE_ID")
+
         day_name, topic = BriefingSchedule.get_today_topic()
         keywords = BriefingSchedule.get_today_keywords()
         date_str = datetime.now(KST).strftime('%Y-%m-%d')
@@ -822,7 +845,7 @@ class BriefingApplicationService:
             report: BriefingReport = BriefingReport(day_name, topic, content)
             
             names: Tuple[str, str] = report.folder_names
-            m_id: str = self.notion.get_or_create_page(PARENT_PAGE_ID, names[0], "📁")
+            m_id: str = self.notion.get_or_create_page(self.parent_page_id, names[0], "📁")
             w_id: str = self.notion.get_or_create_page(m_id, names[1], "📂")
             
             self.notion.publish_report(w_id, report)
@@ -839,9 +862,10 @@ class BriefingApplicationService:
             raise e
 
 if __name__ == "__main__":
-    g_p = GeminiProvider(GEMINI_API_KEY)
-    n_p = NotionPublisher(NOTION_TOKEN)
-    s_p = SlackNotifier(SLACK_WEBHOOK_URL)
+    env_vars = validate_environment()
+    g_p = GeminiProvider(env_vars["GEMINI_API_KEY"])
+    n_p = NotionPublisher(env_vars["NOTION_TOKEN"])
+    s_p = SlackNotifier(env_vars.get("SLACK_WEBHOOK_URL"))
     a_p = AcademicProvider()
-    service = BriefingApplicationService(g_p, n_p, s_p, a_p)
+    service = BriefingApplicationService(g_p, n_p, s_p, a_p, parent_page_id=env_vars["PARENT_PAGE_ID"])
     service.run_daily_briefing()

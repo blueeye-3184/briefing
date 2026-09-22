@@ -1,31 +1,82 @@
 name: Daily Gemini-Notion Briefing (KST Optimized)
 
 on:
+  pull_request:
+    branches:
+      - main
   schedule:
     # 매일 한국 시간(KST) 오전 08:17에 실행 (UTC 23:17)
     - cron: '17 23 * * *'
-  workflow_dispatch: 
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-briefing-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  briefing:
+  test:
+    name: Unit Test & Verification Gate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
-          python-version: '3.10'
+          python-version: '3.13'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # 루트에 있는 requirements.txt 사용 (없을 경우 필수 패키지 직접 설치)
-          if [ -f requirements.txt ]; then 
-            pip install -r requirements.txt
-          else
-            pip install google-genai requests tenacity python-dotenv
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run Unit Tests
+        run: |
+          python -m pytest -q
+
+      - name: Check Git Diff Cleanliness
+        run: |
+          git diff --check
+
+  briefing:
+    name: Run Daily Briefing
+    needs: test
+    if: ${{ success() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Pre-flight Secret Validation
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          PARENT_PAGE_ID: ${{ secrets.PARENT_PAGE_ID }}
+        run: |
+          MISSING=""
+          [ -z "$GEMINI_API_KEY" ] && MISSING="${MISSING} GEMINI_API_KEY"
+          [ -z "$NOTION_TOKEN" ] && MISSING="${MISSING} NOTION_TOKEN"
+          [ -z "$PARENT_PAGE_ID" ] && MISSING="${MISSING} PARENT_PAGE_ID"
+          if [ -n "$MISSING" ]; then
+            echo "::error::Required secrets are missing:${MISSING}"
+            exit 1
           fi
 
       - name: Run Daily Briefing
@@ -35,5 +86,14 @@ jobs:
           PARENT_PAGE_ID: ${{ secrets.PARENT_PAGE_ID }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
-          # 루트에 있는 스크립트 실행
           python briefing_auto.py
+
+      - name: Upload Run Artifacts
+        if: always()
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9974edd1 # v4.6.1
+        with:
+          name: briefing-run-artifacts
+          path: |
+            *.log
+            manifest.json
+          if-no-files-found: ignore
