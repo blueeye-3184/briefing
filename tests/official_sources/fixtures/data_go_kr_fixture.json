@@ -1,0 +1,27 @@
+{
+  "response": {
+    "header": {
+      "resultCode": "00",
+      "resultMsg": "NORMAL SERVICE."
+    },
+    "body": {
+      "items": {
+        "item": [
+          {
+            "dealYear": 2026,
+            "dealMonth": 3,
+            "dealDay": 15,
+            "sggCd": "47190",
+            "umdNm": "송정동",
+            "aptNm": "구미푸르지오",
+            "dealAmount": " 35,000",
+            "excluUseAr": 84.95
+          }
+        ]
+      },
+      "numOfRows": 10,
+      "pageNo": 1,
+      "totalCount": 1
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "list": [
+    {
+      "ancmId": "IRIS-2026-001",
+      "ancmNm": "2026년도 국토교통 지능형 건축설계 자동화 R&D 신규지원 대상과제 공고",
+      "ancmDe": "2026-03-20",
+      "mngOrgNm": "국토교통과학기술진흥원",
+      "receipt_start": "2026-03-25",
+      "receipt_end": "2026-04-25",
+      "detail_verified": true,
+      "url": "https://www.iris.go.kr/contents/retrieveBsnsAncmDtl.do?ancmId=IRIS-2026-001"
+    },
+    {
+      "ancmId": "IRIS-2026-002",
+      "ancmNm": "[정정] 2026년도 모듈러 건축 기술 실증 R&D 지원사업 공고",
+      "ancmDe": "2026-03-21",
+      "mngOrgNm": "국토교통과학기술진흥원",
+      "receipt_start": "2026-03-25",
+      "receipt_end": "2026-04-30",
+      "supersedes": "IRIS-2026-BASE",
+      "detail_verified": true,
+      "url": "https://www.iris.go.kr/contents/retrieveBsnsAncmDtl.do?ancmId=IRIS-2026-002"
+    },
+    {
+      "ancmId": "IRIS-2026-003",
+      "ancmNm": "탄소중립 건축자재 시험평가 R&D 통합 사전공고",
+      "ancmDe": "2026-03-22",
+      "mngOrgNm": "과학기술정보통신부",
+      "detail_verified": false,
+      "url": "https://www.iris.go.kr/contents/retrieveBsnsAncmDtl.do?ancmId=IRIS-2026-003"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>국토교통부 보도자료</title>
+    <link>https://www.molit.go.kr</link>
+    <description>국토교통부 공식 보도자료 피드</description>
+    <item>
+      <title>2026년 상반기 지방 광역권 주거복지 및 도시재생 추진계획</title>
+      <link>https://www.molit.go.kr/USR/NEWS/m_71/dtl.jsp?lcls=NEWS&amp;id=123456</link>
+      <description>국토교통부는 경북 구미·김천을 비롯한 지방 거점 도시의 주거 안정 정책을 적극 추진합니다.</description>
+      <pubDate>2026-03-20T09:00:00+09:00</pubDate>
+    </item>
+  </channel>
+</rss>

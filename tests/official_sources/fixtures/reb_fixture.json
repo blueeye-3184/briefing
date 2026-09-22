@@ -1,0 +1,13 @@
+{
+  "status": "success",
+  "is_sample": false,
+  "data": [
+    {
+      "region_name": "구미시",
+      "index_type": "아파트 매매가격지수",
+      "base_date": "2026-03-01",
+      "index_value": 98.4,
+      "change_rate": 0.05
+    }
+  ]
+}

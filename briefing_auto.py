@@ -6,8 +6,8 @@ import re
 import unicodedata
 import requests
 from collections import Counter
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple, cast
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 from google import genai # type: ignore
 from google.genai import types # type: ignore
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception, retry_if_exception_type # type: ignore
@@ -183,6 +183,58 @@ class BriefingSchedule:
         now: datetime = datetime.now(KST)
         day_idx: int = now.weekday()
         return cls.SEARCH_KEYWORDS.get(day_idx, ["건축"])
+
+    @classmethod
+    def get_policy(cls, day_idx: Optional[int] = None) -> Any:
+        """TopicPolicyRegistry와 연동하여 요일별 공식 정책 객체 반환"""
+        from official_sources.registry import TopicPolicyRegistry
+        if day_idx is None:
+            day_idx = datetime.now(KST).weekday()
+        return TopicPolicyRegistry.get_by_day(day_idx)
+
+
+def collect_official_evidence(
+    policy: Any = None,
+    run_date_kst: Optional[date] = None,
+    providers: Optional[Sequence[Any]] = None,
+) -> Any:
+    """P0-4 공식 1차 출처 수집·검증 퍼사드 함수"""
+    from official_sources.models import EvidencePack, TopicPolicy
+    from official_sources.registry import TopicPolicyRegistry
+    from official_sources.service import OfficialEvidenceService
+    from official_sources.verification import OfficialSourceVerifier
+
+    if policy is None:
+        policy = BriefingSchedule.get_policy()
+    if run_date_kst is None:
+        run_date_kst = datetime.now(KST).date()
+
+    if providers is None:
+        from official_sources.adapters.data_go_kr import DataGoKrProvider
+        from official_sources.adapters.gimcheon import GimcheonNoticeProvider
+        from official_sources.adapters.gumi import GumiNoticeProvider
+        from official_sources.adapters.iris import IrisAnnouncementProvider
+        from official_sources.adapters.kaia import KaiaAnnouncementProvider
+        from official_sources.adapters.kosis import KosisProvider
+        from official_sources.adapters.molit_rss import MolitRssProvider
+        from official_sources.adapters.reb_rone import RebRoneProvider
+        from official_sources.http_client import SafeHttpClient
+
+        http_client = SafeHttpClient()
+        providers = (
+            KosisProvider(http_client),
+            RebRoneProvider(http_client),
+            DataGoKrProvider(http_client),
+            MolitRssProvider(http_client),
+            GumiNoticeProvider(http_client),
+            GimcheonNoticeProvider(http_client),
+            IrisAnnouncementProvider(http_client),
+            KaiaAnnouncementProvider(http_client),
+        )
+
+    verifier = OfficialSourceVerifier()
+    service = OfficialEvidenceService(providers, verifier)
+    return service.collect(policy, run_date_kst)
 
 class BriefingReport:
     """생성된 리포트 데이터 모델"""
