@@ -18,5 +18,8 @@ log list/
 loglist.txt
 inspect_notion.py
 
-# Local-only governance/security material (may contain credentials)
-/01_Standard_Procedures/
+# Governance docs in 01_Standard_Procedures are tracked; local-only worktrees/data/secrets are ignored
+/01_Standard_Procedures/*
+!/01_Standard_Procedures/00.Governance_Directive.md
+!/01_Standard_Procedures/00.Project_Protocol.md
+!/01_Standard_Procedures/00.SOP_Manual.md

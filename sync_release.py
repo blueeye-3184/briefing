@@ -22,7 +22,13 @@ KST = timezone(timedelta(hours=9))
 def run_unit_tests():
     for test_cmd in [["py", "-3.13", "-m", "pytest"], ["pytest"], [sys.executable, "-m", "pytest"]]:
         try:
-            res = subprocess.run(test_cmd, capture_output=True, text=True, encoding='utf-8')
+            res = subprocess.run(
+                test_cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+            )
             if res.returncode == 0:
                 return 0, res.stdout
             elif "No module named pytest" not in (res.stderr or "") and "not recognized" not in (res.stderr or ""):
@@ -33,7 +39,13 @@ def run_unit_tests():
 
 def run_cmd(cmd, check=True):
     print(f"[실행] {' '.join(cmd)}")
-    res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
+    res = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding='utf-8',
+        errors='replace',
+    )
     if check and res.returncode != 0:
         print(f"[오류] 명령 실패 (코드 {res.returncode}):\n{res.stderr or res.stdout}")
         sys.exit(res.returncode)
@@ -74,6 +86,13 @@ def update_committee_opinions(file_path, today_str, decision_id, version, desc):
         updated = content.replace(anchor, anchor + new_block, 1)
     else:
         updated = content + "\n" + new_block
+
+    # Update footer if present
+    updated = re.sub(
+        r'\*Last Updated:.*?\*',
+        f'*Last Updated: {today_str} | Decision ID: {decision_id}*',
+        updated
+    )
 
     with open(file_path, 'w', encoding='utf-8') as f:
         f.write(updated)
@@ -195,9 +214,28 @@ def main():
 
     # Step 4: Git 커밋 및 태그
     print("[4/4] Git 스테이징 및 커밋/태그 생성 중...")
-    run_cmd(["git", "add", "README.md", "update.md", "03.Committee_Opinions.md", "04.Data_Collection_Log.md", "LOGLIST.md", "briefing_auto.py", "01_Standard_Procedures/", "scripts/", "sync_release.py"])
-    if os.path.exists("tests"):
-        run_cmd(["git", "add", "tests/"])
+    staging_targets = [
+        "README.md",
+        "update.md",
+        "03.Committee_Opinions.md",
+        "04.Data_Collection_Log.md",
+        "LOGLIST.md",
+        "briefing_auto.py",
+        "sync_release.py",
+        ".gitignore",
+    ]
+    optional_targets = [
+        "01_Standard_Procedures/00.Governance_Directive.md",
+        "01_Standard_Procedures/00.Project_Protocol.md",
+        "01_Standard_Procedures/00.SOP_Manual.md",
+        ".github/workflows/daily_briefing.yml",
+        "scripts/",
+        "tests/",
+    ]
+    for target in optional_targets:
+        if os.path.exists(target):
+            staging_targets.append(target)
+    run_cmd(["git", "add"] + staging_targets)
     
     commit_msg = f"Release {version}: {desc} (5-Doc Sync Completed)"
     run_cmd(["git", "commit", "-m", commit_msg])
