@@ -55,12 +55,14 @@ class SafeHttpClient:
 
     def __init__(
         self,
-        allowed_domains: Sequence[str] = (),
+        allowed_domains: Sequence[str],
         max_retries: int = 3,
         timeout: tuple[float, float] = DEFAULT_TIMEOUT,
         session: requests.Session | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
+        if not allowed_domains:
+            raise ValueError("SafeHttpClient requires non-empty allowed_domains.")
         self.allowed_domains = tuple(allowed_domains)
         self.max_retries = max_retries
         self.timeout = timeout
@@ -81,7 +83,7 @@ class SafeHttpClient:
         parsed_url = urlparse(url)
         if parsed_url.scheme.lower() != "https":
             raise PermissionError(f"HTTP 요청 거부: HTTPS 프로토콜만 허용됩니다 ({sanitize_url(url)})")
-        if self.allowed_domains and not is_domain_allowed(parsed_url.netloc, self.allowed_domains):
+        if not is_domain_allowed(parsed_url.netloc, self.allowed_domains):
             raise PermissionError(
                 f"허용되지 않은 도메인: {parsed_url.netloc} ({sanitize_url(url)})"
             )
@@ -97,14 +99,25 @@ class SafeHttpClient:
                     allow_redirects=True,
                 )
 
-                # 2. Redirect 최종 URL 검증
+                # 2. Redirect hop 및 최종 URL 검증
+                for hop in getattr(resp, "history", ()):
+                    hop_parsed = urlparse(hop.url)
+                    if hop_parsed.scheme.lower() != "https":
+                        raise PermissionError(
+                            f"Redirect hop이 HTTPS가 아닙니다: {sanitize_url(hop.url)}"
+                        )
+                    if not is_domain_allowed(hop_parsed.netloc, self.allowed_domains):
+                        raise PermissionError(
+                            f"Redirect hop 대상 도메인 불허: {hop_parsed.netloc} ({sanitize_url(hop.url)})"
+                        )
+
                 final_parsed = urlparse(resp.url)
                 if final_parsed.scheme.lower() != "https":
                     raise PermissionError("Redirect 대상이 HTTPS가 아닙니다.")
-                if self.allowed_domains and not is_domain_allowed(
-                    final_parsed.netloc, self.allowed_domains
-                ):
-                    raise PermissionError(f"Redirect 대상 도메인 불허: {final_parsed.netloc}")
+                if not is_domain_allowed(final_parsed.netloc, self.allowed_domains):
+                    raise PermissionError(
+                        f"Redirect 대상 도메인 불허: {final_parsed.netloc} ({sanitize_url(resp.url)})"
+                    )
 
                 # 3. 로그인/CAPTCHA 우회 탐지
                 resp_text_lower = resp.text[:1000].lower() if resp.text else ""

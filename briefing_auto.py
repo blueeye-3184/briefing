@@ -220,7 +220,7 @@ def collect_official_evidence(
         from official_sources.adapters.reb_rone import RebRoneProvider
         from official_sources.http_client import SafeHttpClient
 
-        http_client = SafeHttpClient()
+        http_client = SafeHttpClient(allowed_domains=policy.allowed_domains)
         providers = (
             KosisProvider(http_client),
             RebRoneProvider(http_client),

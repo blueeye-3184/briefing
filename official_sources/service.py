@@ -87,20 +87,22 @@ class OfficialEvidenceService:
         )
 
         # 3. Provider 호출 및 후보군 수집 (개별 실패 허용)
+        supported_providers = [p for p in self._providers if p.supports(policy)]
         provider_results: list[ProviderResult] = []
         raw_candidates: list[OfficialSource] = []
+        provider_failures: list[str] = []
 
-        for provider in self._providers:
-            if not provider.supports(policy):
-                continue
+        for provider in supported_providers:
+            p_id = getattr(provider, "provider_id", "unknown_provider")
             try:
                 res = provider.collect(query, policy)
                 provider_results.append(res)
                 raw_candidates.extend(res.candidates)
             except Exception as exc:
+                provider_failures.append(f"{p_id}: {type(exc).__name__}")
                 provider_results.append(
                     ProviderResult(
-                        provider_id=getattr(provider, "provider_id", "unknown_provider"),
+                        provider_id=p_id,
                         queries=(f"error: {type(exc).__name__}",),
                         candidates=(),
                         rejection_counts={"provider_schema_error": 1},
@@ -138,6 +140,19 @@ class OfficialEvidenceService:
 
         # 6. 정책별 최소 요건 및 구성 결손(Deficit) 판정
         deficits: list[str] = []
+
+        if len(supported_providers) == 0:
+            deficits.append("configuration_deficit: no supported providers configured for policy")
+
+        if provider_failures:
+            if len(provider_failures) == len(supported_providers):
+                deficits.append(
+                    f"provider_failure_deficit: all {len(supported_providers)} supported providers failed"
+                )
+            elif len(verified_sources) == 0:
+                deficits.append(
+                    f"provider_failure_deficit: provider failure occurred with 0 verified sources ({len(provider_failures)} failed)"
+                )
 
         if len(verified_sources) < policy.official_minimum:
             deficits.append(

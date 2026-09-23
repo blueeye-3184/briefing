@@ -244,3 +244,71 @@ def test_deterministic_ordering():
     # 최신순 정렬 확인
     assert pack.official_sources[0].source_id == "molit_new"
     assert pack.official_sources[1].source_id == "molit_old"
+
+
+# --- Provider Failure vs Genuine-Empty Deficit Tests ---
+
+def test_service_fail_closed_when_all_providers_fail_on_optional_policy():
+    policy = TopicPolicyRegistry.get_by_day(1)  # Tuesday (official_minimum=0)
+    verifier = OfficialSourceVerifier()
+    eval_date = date(2026, 3, 24)
+
+    # 모든 provider가 예외 발생
+    failing_prov1 = MockProvider("prov_1", ("molit.go.kr",), should_fail=True)
+    failing_prov2 = MockProvider("prov_2", ("data.go.kr",), should_fail=True)
+
+    service = OfficialEvidenceService([failing_prov1, failing_prov2], verifier)
+    pack = service.collect(policy, eval_date)
+
+    assert pack.status == EvidenceStatus.SOURCE_DEFICIT
+    assert any("provider_failure_deficit" in d for d in pack.deficits)
+    assert len(pack.official_sources) == 0
+
+
+def test_service_fail_closed_when_provider_fails_with_zero_sources_on_optional_policy():
+    policy = TopicPolicyRegistry.get_by_day(1)  # Tuesday (official_minimum=0)
+    verifier = OfficialSourceVerifier()
+    eval_date = date(2026, 3, 24)
+
+    # 하나는 실패하고, 다른 하나는 정상이나 0건 반환 (불완전 수집 상태에서 0건)
+    failing_prov = MockProvider("prov_fail", ("molit.go.kr",), should_fail=True)
+    empty_prov = MockProvider("prov_empty", ("data.go.kr",), candidates=())
+
+    service = OfficialEvidenceService([failing_prov, empty_prov], verifier)
+    pack = service.collect(policy, eval_date)
+
+    assert pack.status == EvidenceStatus.SOURCE_DEFICIT
+    assert any("provider_failure_deficit" in d for d in pack.deficits)
+    assert len(pack.official_sources) == 0
+
+
+def test_service_genuine_empty_ready_on_optional_policy():
+    policy = TopicPolicyRegistry.get_by_day(1)  # Tuesday (official_minimum=0)
+    verifier = OfficialSourceVerifier()
+    eval_date = date(2026, 3, 24)
+
+    # 모든 provider가 정상 실행되었으나 검색 결과가 0건인 경우 (정상적인 genuine-empty)
+    empty_prov1 = MockProvider("prov_1", ("molit.go.kr",), candidates=())
+    empty_prov2 = MockProvider("prov_2", ("data.go.kr",), candidates=())
+
+    service = OfficialEvidenceService([empty_prov1, empty_prov2], verifier)
+    pack = service.collect(policy, eval_date)
+
+    assert pack.status == EvidenceStatus.READY
+    assert len(pack.deficits) == 0
+    assert len(pack.official_sources) == 0
+
+
+def test_service_configuration_deficit_when_no_supported_providers():
+    policy = TopicPolicyRegistry.get_by_day(1)  # Tuesday (allowed: molit.go.kr, etc.)
+    verifier = OfficialSourceVerifier()
+    eval_date = date(2026, 3, 24)
+
+    # 화요일 도메인을 전혀 지원하지 않는 provider만 주입
+    unsupported_prov = MockProvider("unsupported", ("unknown-domain.kr",))
+
+    service = OfficialEvidenceService([unsupported_prov], verifier)
+    pack = service.collect(policy, eval_date)
+
+    assert pack.status == EvidenceStatus.SOURCE_DEFICIT
+    assert any("configuration_deficit" in d for d in pack.deficits)

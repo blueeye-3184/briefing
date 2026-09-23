@@ -70,6 +70,12 @@ def test_safe_http_client_login_captcha_detection():
         assert "captcha" in str(exc_info.value).lower()
 
 
+def test_safe_http_client_rejects_empty_allowed_domains():
+    with pytest.raises(ValueError) as exc_info:
+        SafeHttpClient(allowed_domains=[])
+    assert "non-empty allowed_domains" in str(exc_info.value)
+
+
 def test_safe_http_client_disallowed_redirect():
     client = SafeHttpClient(allowed_domains=["kosis.kr"])
     mock_resp = MagicMock(spec=requests.Response)
@@ -77,11 +83,30 @@ def test_safe_http_client_disallowed_redirect():
     mock_resp.url = "https://attacker.com/malicious"
     mock_resp.headers = {}
     mock_resp.text = "malicious payload"
+    mock_resp.history = []
 
     with patch("requests.Session.send", return_value=mock_resp):
         with pytest.raises(PermissionError) as exc_info:
             client.get("https://kosis.kr/data")
         assert "attacker.com" in str(exc_info.value)
+
+
+def test_safe_http_client_redirect_hop_disallowed():
+    client = SafeHttpClient(allowed_domains=["molit.go.kr"])
+    hop = MagicMock(spec=requests.Response)
+    hop.url = "https://evil.example/intermediate"
+
+    mock_resp = MagicMock(spec=requests.Response)
+    mock_resp.status_code = 200
+    mock_resp.url = "https://www.molit.go.kr/final"
+    mock_resp.headers = {}
+    mock_resp.text = "valid content"
+    mock_resp.history = [hop]
+
+    with patch("requests.Session.send", return_value=mock_resp):
+        with pytest.raises(PermissionError) as exc_info:
+            client.get("https://www.molit.go.kr/start")
+        assert "evil.example" in str(exc_info.value)
 
 
 # --- KOSIS Provider Tests ---
