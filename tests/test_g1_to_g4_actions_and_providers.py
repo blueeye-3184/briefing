@@ -355,6 +355,21 @@ def test_g3_gemini_success_on_first_full_generation(tmp_path):
     assert attempt["char_count"] == 10_000
 
 
+def test_g3_ci_test_mode_skips_operational_jitter(monkeypatch):
+    """CI unit tests must not inherit the production traffic-spreading delay."""
+    provider = GeminiProvider(api_key="mock_key")
+    provider.client = MagicMock()
+    provider.client.models.count_tokens.return_value.total_tokens = 500
+    provider.client.models.generate_content.return_value.text = "가" * 10_000
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("BRIEFING_SKIP_JITTER", "1")
+
+    with patch("briefing_auto.time.sleep") as sleep_mock:
+        provider.generate_content("주제", papers=[])
+
+    sleep_mock.assert_not_called()
+
+
 def test_g3_gemini_condense_triggered_when_too_long(tmp_path):
     """G3: Output > 11,000 chars triggers CONDENSE prompt on the same model and succeeds."""
     provider = GeminiProvider(api_key="mock_key")

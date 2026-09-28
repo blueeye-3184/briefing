@@ -176,6 +176,8 @@ def test_workflow_has_pr_safe_gates_permissions_and_pinned_actions():
     assert "GEMINI_API_KEY" not in test_block
     assert "NOTION_TOKEN" not in test_block
     assert "PARENT_PAGE_ID" not in test_block
+    assert "BRIEFING_SKIP_JITTER: '1'" in test_block
+    assert "BRIEFING_SKIP_JITTER" not in briefing_block
 
     # Every checkout step specifies fetch-depth: 1 explicitly.
     assert "fetch-depth: 1" in test_block

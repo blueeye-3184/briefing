@@ -39,6 +39,8 @@ jobs:
           pip install pytest
 
       - name: Run Unit Tests
+        env:
+          BRIEFING_SKIP_JITTER: '1'
         run: |
           python -m pytest -q
 

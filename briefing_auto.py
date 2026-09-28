@@ -797,7 +797,14 @@ class GeminiProvider:
 
         is_mocked = hasattr(self._call_api, "assert_called")
 
-        if os.environ.get('GITHUB_ACTIONS') and not getattr(self, "_skip_jitter", False):
+        skip_jitter = os.environ.get("BRIEFING_SKIP_JITTER", "").strip().lower() in {
+            "1", "true", "yes"
+        }
+        if (
+            os.environ.get("GITHUB_ACTIONS")
+            and not skip_jitter
+            and not getattr(self, "_skip_jitter", False)
+        ):
             jitter: int = random.randint(0, 300)
             if jitter > 0:
                 print(f"[정보] 트래픽 분산을 위해 {jitter}초 대기 후 시작합니다...")
