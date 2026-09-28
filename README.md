@@ -37,7 +37,11 @@
 | 12 | **History Guardian** | 체크포인트 설정 및 데이터 보존 확인 | "컨텍스트 전이(Bleeding)" 및 "초기화 실패" 공격 |
 | 13 | **Security Officer** | 연구 윤리 준수 및 데이터 보안 감사 | "보안 취약" 및 "데이터 폐쇄성/윤리 결함" 타격 |
 
-## 🚀 주요 기능 및 인프라 (v9.2 Academic OpenAccess Architecture)
+## 🚀 주요 기능 및 인프라 (v9.3-rc1 Reliability Hardening)
+- **고정 실행환경**: GitHub Actions runner를 `ubuntu-24.04`로 고정하고 checkout/setup-python/upload-artifact를 공식 Node.js 24 지원 release의 full SHA로 고정.
+- **공급자 장애 분리**: OpenAlex 429·Crossref 장애·정상 검색 0건을 별도 상태로 관리하고 `Retry-After`, bounded backoff, query 간격을 적용.
+- **Gemini 길이 복구 계약**: 출력 초과 시 같은 모델의 CONDENSE 1회만 허용하며 provider availability 오류에서만 다음 모델로 전환하고 모든 시도를 manifest에 기록.
+- **실패 artifact 보존**: 외부 API 호출 전 `artifacts/run.log`와 `artifacts/manifest.json`을 생성하고 실패 단계·검색 메트릭·Gemini 시도를 Secret 없이 보존.
 - **GitHub Actions 2단계 검증 게이트**: Pull Request에서는 운영 secret 없이 `test` job만 실행하고, `schedule` 또는 수동 실행에서 테스트가 전수 통과한 경우에만 `briefing` job이 실행된다. `permissions: contents: read` 및 중복 실행 방지 `concurrency` 적용.
 - **사전 환경변수 무결성 검증**: `PARENT_PAGE_ID` 하드코딩 기본값을 제거하고, 필수 시크릿(`GEMINI_API_KEY`, `NOTION_TOKEN`, `PARENT_PAGE_ID`) 누락 시 외부 API 호출 전 즉시 차단 (시크릿 누출 방지).
 - **거버넌스 원문 추적성 복원**: 저장소용 공개 사본(`01_Standard_Procedures/00.*`)을 복원하고 로컬 작업트리 및 민감정보를 격리.
@@ -52,12 +56,13 @@
 
 ## 📂 파일 구조
 - `briefing_auto.py`: 핵심 파이프라인 (AcademicProvider + GeminiProvider + NotionPublisher + SlackNotifier + ApplicationService)
+- `manifest_manager.py`: 실행 manifest, 상태 계약, 실패 로그 및 Secret redaction 관리
 - `01_Standard_Procedures/`: 최상위 거버넌스 및 표준 작업 절차서 (GRID, IRD-DP, SOP 공개 사본)
 - `03.Committee_Opinions.md`: 13인 위원회 Tier 1 전략 비준 및 의사결정 로그 (Decision IDs)
 - `04.Data_Collection_Log.md`: 실시간 실행 및 파이프라인 무결성 감사 로그
 - `LOGLIST.md`: 브리핑 실행 이력 및 API 응답 로그 아카이브
-- `update.md`: 프로젝트 주요 릴리즈 노트 (v1.0 ~ v9.1)
-- `tests/`: 시스템 무결성 검증을 위한 30개 단위 테스트 수트 (Domain, Academic, Gemini, Notion, Markdown, Governance/Config)
+- `update.md`: 프로젝트 주요 릴리즈 노트 (v1.0 ~ v9.3-rc1)
+- `tests/`: 시스템 무결성 검증을 위한 107개 단위 테스트 수트 (Domain, Academic, Gemini, Notion, Official Sources, Governance/Config)
 
 ## 🛠 실행 및 검증 방법
 1. 로컬 환경에 `.env` 파일을 생성하고 `GEMINI_API_KEY`, `NOTION_TOKEN`, `PARENT_PAGE_ID` (선택: `SLACK_WEBHOOK_URL`)를 설정합니다.
@@ -66,7 +71,7 @@
 pip install -r requirements.txt
 pip install pytest
 ```
-3. 시스템 단위 테스트를 실행합니다 (현재 30개 테스트 전수 통과 확인):
+3. 시스템 단위 테스트를 실행합니다 (현재 107개 테스트 전수 통과 확인):
 ```bash
 pytest
 ```

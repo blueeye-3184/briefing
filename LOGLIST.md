@@ -34,6 +34,7 @@
 | 2026-04-15 | 수요일 | 설계 자동화 기술 및 BIM 동향 | ✅ 성공 | 시스템 안정화 단계 |
 
 ## 🛠 개발 및 응답 로그 (Response Logs)
+- **2026-09-28**: [v9.3-rc1] G1~G4 Actions runtime·OpenAlex/Gemini 복구·실패 artifact 보존 구현을 독립 검토하고 Critical 1, High 2, Medium 1을 모두 수정. 107개 테스트 통과, main 병합 및 운영 실행은 보류.
 - **2026-09-22**: [v9.2] P0-4 official source interface with 5-doc sync 릴리즈 및 5대 연구 자산(SOP 3) 동시 동기화 완료.
 - **2026-09-22**: [v9.1.1] 다중 에이전트 실행 및 토큰 통제 거버넌스 확립 (Decision ID: T1-20260922-02, SOP 5 제정) 및 5대 연구 자산 동기화 완료 (단위 테스트 31개 전수 통과).
 - **2026-09-22**: [v9.1] PR-safe GitHub Actions 테스트 게이트 구축, 거버넌스 원문 복원, 공백 환경변수 및 Slack 오류 로그 보안 강화 릴리즈 및 5대 연구 자산(SOP 3) 동시 동기화 완료 (단위 테스트 30개 전수 통과).
