@@ -311,6 +311,7 @@ class AcademicProvider:
         max_retries: int = 3,
         base_backoff: float = 1.0,
         max_backoff: float = 10.0,
+        query_interval: float = 0.25,
         sleep_fn: Optional[Callable[[float], None]] = None,
         clock_fn: Optional[Callable[[], float]] = None,
     ) -> None:
@@ -322,6 +323,7 @@ class AcademicProvider:
         self.max_retries: int = max_retries
         self.base_backoff: float = base_backoff
         self.max_backoff: float = max_backoff
+        self.query_interval: float = max(0.0, query_interval)
         self.sleep_fn: Callable[[float], None] = sleep_fn or time.sleep
         self.clock_fn: Callable[[], float] = clock_fn or time.time
         self.last_audit: Dict[str, Any] = {}
@@ -346,7 +348,9 @@ class AcademicProvider:
         provider_failures: List[str] = []
         per_query = max(max_papers * 2, 20)
 
-        for kw in keywords:
+        for query_index, kw in enumerate(keywords):
+            if query_index > 0 and self.query_interval > 0:
+                self.sleep_fn(self.query_interval)
             papers, rejected, metric = self._search_single_query(kw, per_query)
             candidates.extend(papers)
             rejection_reasons.update(rejected)
@@ -389,6 +393,18 @@ class AcademicProvider:
         else:
             if rate_limited_count > 0 and success_count == 0:
                 status = SearchStatus.OPENALEX_RATE_LIMITED
+                degraded = True
+            elif rejection_reasons.get("crossref_rate_limited", 0) > 0:
+                status = SearchStatus.PROVIDER_UNAVAILABLE
+                degraded = True
+            elif (
+                rejection_reasons.get("crossref_request_error", 0) > 0
+                or rejection_reasons.get("crossref_unavailable", 0) > 0
+            ):
+                status = SearchStatus.PROVIDER_UNAVAILABLE
+                degraded = True
+            elif rejection_reasons.get("crossref_invalid_payload", 0) > 0:
+                status = SearchStatus.PROVIDER_INVALID_RESPONSE
                 degraded = True
             elif success_count == query_count:
                 status = SearchStatus.SEARCH_GENUINE_EMPTY
@@ -584,7 +600,7 @@ class AcademicProvider:
                     rejected["openalex_http_error"] += 1
                     query_metric["error_type"] = f"http_{res.status_code}"
                     if res.status_code >= 500 and attempt < self.max_retries - 1:
-                        self.sleep_fn(self.base_backoff * (2 ** attempt))
+                        self.sleep_fn(min(self.base_backoff * (2 ** attempt), self.max_backoff))
                         continue
                     return [], rejected, query_metric
 
@@ -592,7 +608,7 @@ class AcademicProvider:
                 rejected["openalex_request_error"] += 1
                 query_metric["error_type"] = type(e).__name__
                 if attempt < self.max_retries - 1:
-                    self.sleep_fn(self.base_backoff * (2 ** attempt))
+                    self.sleep_fn(min(self.base_backoff * (2 ** attempt), self.max_backoff))
                     continue
                 return [], rejected, query_metric
 
@@ -613,6 +629,10 @@ class AcademicProvider:
                 headers=self.headers,
                 timeout=8,
             )
+            if response.status_code == 429:
+                return None, "crossref_rate_limited"
+            if response.status_code >= 500:
+                return None, "crossref_unavailable"
             if response.status_code != 200:
                 return None, "crossref_http_error"
             message = response.json().get("message", {})
@@ -662,6 +682,8 @@ class GeminiProvider:
         if "429" in msg or "resource_exhausted" in msg or "rate limit" in msg:
             return GeminiOutcome.RATE_LIMITED.value
         if "503" in msg or "unavailable" in msg:
+            return GeminiOutcome.UNAVAILABLE.value
+        if "404" in msg or "not_found" in msg or "no longer available" in msg:
             return GeminiOutcome.UNAVAILABLE.value
         if "timeout" in msg or "timed out" in msg or "deadline_exceeded" in msg:
             return GeminiOutcome.TIMEOUT.value
@@ -784,6 +806,7 @@ class GeminiProvider:
         last_err: Optional[Exception] = None
         for model_name in self.models:
             t0 = time.time()
+            current_attempt_type = "FULL"
             try:
                 print(f"[시도] {model_name} 모델로 리포트 생성 중...")
                 if is_mocked:
@@ -832,6 +855,7 @@ class GeminiProvider:
                 print(f"[정보] {model_name} 출력 길이({body_length:,}자) 초과 -> CONDENSE 축약 시도")
 
                 t1 = time.time()
+                current_attempt_type = "CONDENSE"
                 condense_prompt = self._build_condense_prompt(text_val)
                 condensed_val = self._generate_with_prompt(model_name, condense_prompt)
                 elapsed_condense = time.time() - t1
@@ -878,17 +902,24 @@ class GeminiProvider:
 
                 # Record attempt if not already recorded
                 if manifest_manager and not any(
-                    a["model"] == model_name for a in manifest_manager.manifest_data.get("gemini_attempts", [])
+                    a["model"] == model_name and a["attempt_type"] == current_attempt_type
+                    for a in manifest_manager.manifest_data.get("gemini_attempts", [])
                 ):
                     manifest_manager.record_gemini_attempt(
                         model=model_name,
-                        attempt_type="FULL",
+                        attempt_type=current_attempt_type,
                         outcome=outcome,
                         char_count=None,
                         elapsed_seconds=elapsed,
                     )
-                time.sleep(1)
-                continue
+                if outcome in (
+                    GeminiOutcome.RATE_LIMITED.value,
+                    GeminiOutcome.UNAVAILABLE.value,
+                    GeminiOutcome.TIMEOUT.value,
+                ):
+                    time.sleep(1)
+                    continue
+                raise e
 
         if isinstance(last_err, Exception):
             raise last_err

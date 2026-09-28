@@ -133,7 +133,8 @@ class InfographicSpec:
 SENSITIVE_PATTERNS = [
     re.compile(r'(Bearer\s+)[A-Za-z0-9_\-\.]{10,}', re.IGNORECASE),
     re.compile(r'(AIzaSy)[A-Za-z0-9_\-]{30,}', re.IGNORECASE),
-    re.compile(r'(secret_[A-Za-z0-9]{20,})', re.IGNORECASE),
+    re.compile(r'(secret_)[A-Za-z0-9_\-]{20,}', re.IGNORECASE),
+    re.compile(r'(ntn_)[A-Za-z0-9_\-]{20,}', re.IGNORECASE),
     re.compile(r'(https://hooks\.slack\.com/services/)[A-Za-z0-9/\-_]+', re.IGNORECASE),
     re.compile(r'(mailto:)[^@\s]+@[^@\s]+\.[a-zA-Z0-9]+', re.IGNORECASE),
 ]

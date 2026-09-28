@@ -10,6 +10,7 @@ import os
 import json
 import time
 import pytest
+import requests
 from unittest.mock import MagicMock, patch
 from collections import Counter
 from datetime import datetime, timezone, timedelta
@@ -203,6 +204,60 @@ def test_g2_academic_provider_genuine_empty_status():
     assert result.query_metrics["rate_limited_count"] == 0
 
 
+def test_g2_query_interval_is_applied_between_queries_only():
+    """G2: Successful queries are spaced without sleeping before the first request."""
+    res_200 = MagicMock(status_code=200)
+    res_200.json.return_value = {"results": []}
+    sleep_calls = []
+    provider = AcademicProvider(
+        query_interval=0.75,
+        sleep_fn=lambda seconds: sleep_calls.append(seconds),
+    )
+
+    with patch("requests.get", return_value=res_200):
+        result = provider.search_with_status(["첫 쿼리", "둘째 쿼리", "셋째 쿼리"])
+
+    assert result.status == SearchStatus.SEARCH_GENUINE_EMPTY
+    assert sleep_calls == [0.75, 0.75]
+
+
+def test_g2_crossref_outage_is_not_misclassified_as_genuine_empty():
+    """G2: OpenAlex candidates plus Crossref outage must remain provider failure."""
+    openalex_res = MagicMock(status_code=200)
+    openalex_res.json.return_value = {
+        "results": [{
+            "id": "https://openalex.org/W-crossref-outage",
+            "title": "Crossref Outage Paper",
+            "doi": "https://doi.org/10.1000/crossref-outage",
+            "publication_year": 2026,
+            "authorships": [{"author": {"display_name": "연구자"}}],
+            "primary_location": {"source": {"display_name": "학술지", "type": "journal"}},
+            "best_oa_location": {
+                "is_oa": True,
+                "pdf_url": "https://example.com/paper.pdf",
+                "version": "publishedVersion",
+                "license": "cc-by",
+            },
+            "is_retracted": False,
+            "abstract_inverted_index": {"초록": [0]},
+        }]
+    }
+
+    def mock_get(url, **kwargs):
+        if "crossref.org" in url:
+            raise requests.exceptions.Timeout("Crossref timed out")
+        return openalex_res
+
+    provider = AcademicProvider(query_interval=0)
+    with patch("requests.get", side_effect=mock_get):
+        result = provider.search_with_status(["교차검증 장애"], max_papers=1)
+
+    assert result.status == SearchStatus.PROVIDER_UNAVAILABLE
+    assert result.status != SearchStatus.SEARCH_GENUINE_EMPTY
+    assert result.degraded is True
+    assert result.papers == []
+
+
 def test_g2_academic_provider_provider_unavailable_on_timeout():
     """G2: Network timeout / connection error returns PROVIDER_UNAVAILABLE."""
     provider = AcademicProvider(sleep_fn=lambda s: None, max_retries=2)
@@ -386,6 +441,55 @@ def test_g3_gemini_503_fallback_to_next_model(tmp_path):
     assert attempts[1]["outcome"] == GeminiOutcome.SUCCESS.value
 
 
+def test_g3_unknown_error_does_not_rotate_models(tmp_path):
+    """G3: Only provider availability errors may rotate to another model."""
+    provider = GeminiProvider(api_key="mock_key")
+    provider.client = MagicMock()
+    provider.client.models.count_tokens.return_value.total_tokens = 500
+    provider.client.models.generate_content.side_effect = RuntimeError("unexpected parser defect")
+    manifest_mgr = ManifestManager(artifacts_dir=str(tmp_path / "artifacts"))
+    manifest_mgr.initialize("dec-unknown", "주제")
+
+    with pytest.raises(RuntimeError, match="unexpected parser defect"):
+        provider.generate_content("주제", manifest_manager=manifest_mgr)
+
+    assert provider.client.models.generate_content.call_count == 1
+    attempts = manifest_mgr.manifest_data["gemini_attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["outcome"] == GeminiOutcome.UNKNOWN_ERROR.value
+
+
+def test_g3_condense_provider_error_is_recorded_before_model_fallback(tmp_path):
+    """G3: A CONDENSE 503 is a distinct attempt and may fall back to the next model."""
+    provider = GeminiProvider(api_key="mock_key")
+    provider.client = MagicMock()
+    provider.client.models.count_tokens.return_value.total_tokens = 500
+    calls = []
+
+    def mock_generate(**kwargs):
+        calls.append(kwargs["model"])
+        if len(calls) == 1:
+            return MagicMock(text="가" * 12_000)
+        if len(calls) == 2:
+            raise RuntimeError("503 UNAVAILABLE during condense")
+        return MagicMock(text="나" * 10_000)
+
+    provider.client.models.generate_content.side_effect = mock_generate
+    manifest_mgr = ManifestManager(artifacts_dir=str(tmp_path / "artifacts"))
+    manifest_mgr.initialize("dec-condense-503", "주제")
+
+    with patch("time.sleep", return_value=None):
+        result = provider.generate_content("주제", manifest_manager=manifest_mgr)
+
+    assert "나" * 10_000 in result
+    attempts = manifest_mgr.manifest_data["gemini_attempts"]
+    assert [(a["attempt_type"], a["outcome"]) for a in attempts] == [
+        ("FULL", GeminiOutcome.OUTPUT_TOO_LONG.value),
+        ("CONDENSE", GeminiOutcome.UNAVAILABLE.value),
+        ("FULL", GeminiOutcome.SUCCESS.value),
+    ]
+
+
 # ==============================================================================
 # G4: Run Log & Manifest Skeleton Preservation Tests
 # ==============================================================================
@@ -506,6 +610,18 @@ def test_g4_secret_redaction_in_log_and_manifest(tmp_path):
 
     assert "[REDACTED]" in log_content
     assert "[REDACTED]" in manifest_content
+
+
+def test_g4_notion_secret_token_prefixes_are_fully_redacted():
+    """G4: Notion legacy and current token formats must not retain the secret suffix."""
+    legacy = "secret_abcdefghijklmnopqrstuvwxyz123456"
+    current = "ntn_abcdefghijklmnopqrstuvwxyz123456"
+    redacted = redact_secrets(f"legacy={legacy} current={current}")
+
+    assert legacy not in redacted
+    assert current not in redacted
+    assert "secret_[REDACTED]" in redacted
+    assert "ntn_[REDACTED]" in redacted
 
 
 def test_g4_atomic_write_manifest_produces_valid_json(tmp_path):

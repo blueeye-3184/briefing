@@ -539,14 +539,14 @@ PR URL, run ID/URL, head SHA를 인계서에 기록한다.
 |---|---|---|---|
 | C1 | run 36366832887 원인 문서화 | §2 | COMPLETE |
 | C2 | runner/action Node 24 전환 | workflow diff + 정책 테스트(test_g1_workflow_*) | COMPLETE |
-| C3 | OpenAlex 429/empty 분리 | 단위 테스트(test_g2_*) + manifest | COMPLETE |
-| C4 | Gemini 오류/길이 분리 | 단위 테스트(test_g3_*) + attempts | COMPLETE |
-| C5 | 실패 artifact 보존 | 실패 주입 테스트(test_g4_*) + atomic write | COMPLETE |
+| C3 | OpenAlex 429/empty 분리 | 단위 테스트(test_g2_*) + Crossref 장애 회귀 테스트 + manifest | COMPLETE |
+| C4 | Gemini 오류/길이 분리 | 단위 테스트(test_g3_*) + CONDENSE 오류 시도 기록 | COMPLETE |
+| C5 | 실패 artifact 보존 | 실패 주입 + atomic write + Notion token redaction 테스트 | COMPLETE |
 | C6 | InfographicSpec/PNG | 테스트 + PNG | TODO |
 | C7 | Notion upload/image/read-back | mock + 승인 운영 실행 | TODO |
 | C8 | idempotency | 2회 실행 + 운영 확인 | TODO |
-| C9 | 전체 테스트/CI | pytest 102/102 통과, diff clean | IN_PROGRESS |
-| C10 | Critical/High 0건 | 독립 검토 | TODO |
+| C9 | 전체 테스트/CI | 로컬 pytest 107/107 통과, diff clean; PR CI 미실행 | IN_PROGRESS |
+| C10 | Critical/High 0건 | G1~G4 독립 검토 finding 전부 해결; G5~G6 검토 미수행 | IN_PROGRESS |
 | C11 | 운영 텍스트·이미지 확인 | 승인 run + Notion | TODO |
 
 상태는 `TODO`, `IN_PROGRESS`, `COMPLETE`, `PARTIAL`, `BLOCKED`만 사용한다. 증거 없는 `COMPLETE`는 금지한다.
@@ -640,6 +640,7 @@ WORK_DIRECTIVE_2026-09-28_ACTIONS_NOTION_INFOGRAPHIC.md 전체를 읽고 최신 
 | G2 | Agent A | COMPLETE | 429 Retry-After, backoff, SearchStatus 분리, 가짜 보고서 차단 | Agent B |
 | G3 | Agent A | COMPLETE | 길이 초과 시 CONDENSE 축약, 상한 초과 시 fallback 중단, 시도 기록 | Agent B |
 | G4 | Agent A | COMPLETE | 실행 즉시 run.log/manifest.json 생성, 단계별 실패 주입 보존, 마스킹 | Agent B |
+| G1~G4 독립 검토 | Codex | COMPLETE | Action SHA 공식 tag 대조, 107 tests, Critical 1/High 2/Medium 1 해결 | 원격 push 및 PR CI 후 Agent B |
 | G5 | Agent B | TODO | PNG/File Upload/image/read-back 미구현 | Agent B |
 | G6 | Agent B | TODO | run/decision 중복 방지 미구현 | Agent B |
 | 독립 검토 | 미배정 | TODO | 구현 후 수행 | 검토 agent |
