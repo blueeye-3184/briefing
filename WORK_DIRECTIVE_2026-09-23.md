@@ -338,21 +338,20 @@ Secret은 저장소나 작업지시서에 기록하지 않는다. 현재 키는 
 
 | Gate | 담당 | 상태 | 기준/결과 | 다음 사용자 판단 |
 |---|---|---|---|---|
-| G0 | Codex | COMPLETE | `origin/main@37289e8`, 지시서 작성, Gateway 라이브 모델 확인 | 지시서 검토 후 AGY 호출 여부 결정 |
-| G1 | AGY | NOT_STARTED | P0-4 최신 main 통합 | G1 보고 확인 후 Codex 위험 판정 호출 |
-| G2 | Codex 또는 Claude | OPTIONAL | 기본 skip; Codex의 L1/L2/L3 판정에 따름 | L3일 때만 Claude 호출, 아니면 같은 Codex 세션에서 G4 진행 |
-| G3 | AGY | CONDITIONAL | G2 finding 보완 | 결과 확인 후 Codex 호출 결정 |
-| G4 | Codex | NOT_STARTED | 최종 검증·병합·실행·종료 판정 | Codex 종료 보고 확인 |
+| G0 | Codex | COMPLETE | `origin/main@37289e8`, 지시서 작성, Gateway 라이브 모델 확인 | 지시서 검토 후 AGY 호출 완료 |
+| G1 | AGY | COMPLETE | P0-4 최신 main 통합, PR #3 생성 (`commit 554f481`), 78 tests 통과 | G1 확인 후 Codex G2 검토 호출 완료 |
+| G2 | Codex | COMPLETE | Codex 대체 검토, 2건의 Medium Finding 도출 (`HANDOFF_2026-09-23_G2_CODEX.md`) | G2 확인 후 AGY G3 보완 호출 완료 |
+| G3 | AGY | COMPLETE | G2 Finding 2건 조치 (`commit 26f26fa`, `96cebbe`), 84 tests 통과, PR #3 CI 성공 | G3 확인 후 Codex G4 최종 검증 호출 완료 |
+| G4 | Codex | COMPLETE | PR #3 최종 검증 및 main 병합 (`dd164b0`), 84 tests 통과, 전체 작업 완료 | 전체 P0-4 작업 종료 선언 |
 
 이 원장은 상태 변경 시 과거 결과를 삭제하지 않고 Codex가 갱신한다. AGY와 Claude는 자신의 worktree에 단계별 인계 파일을 남기며, 다른 단계의 완료나 전체 작업 완료를 대신 선언하지 않는다.
 
 ## 9. 현재 사용자 실행 안내
 
 ```text
-[Next Terminal] agy
-[Next Model] KEEP_CURRENT
-[Model Change] NO — 현재 단계는 명세가 확정된 P0-4 통합 구현이므로 AGY 기본 모델로 충분함
-[User Prompt] `$env:CODEX_WORKTREE\WORK_DIRECTIVE_2026-09-23.md`를 읽기 전용 기준으로 먼저 읽고 G1 — AGY P0-4 통합 구현을 시작해줘. 시작 보고에 실제 런타임 모델과 effort를 기록하고, 단계 안의 허용 작업은 중간 승인 질문 없이 끝까지 수행해. 완료 후 `$env:AGY_WORKTREE\HANDOFF_2026-09-23_G1_AGY.md`와 응답에 표준 인계 기록 및 다음 터미널·모델 안내를 동일하게 남기고, 인계 파일을 단계 커밋에 포함한 뒤 정지해줘.
+[Next Terminal] NONE
+[Next Model] NONE
+[Model Change] NO
+[User Prompt] P0-4 공식자료 수집 인터페이스 통합 및 검증, PR #3 main 병합이 성공적으로 완료되었습니다.
 ```
 
-G1 종료 후 기본 다음 경로는 `Codex / gpt-5.6-sol medium`이다. Codex가 G1 결과를 검토하여 Luna 보조 검증, Sol reasoning 상향, Claude 독립 검토 중 필요한 경로만 사용자에게 안내한다.
