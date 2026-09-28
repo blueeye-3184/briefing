@@ -47,7 +47,9 @@
 - pyright는 로컬에 설치되지 않아 미실행. 프로젝트 필수 gate에는 포함되지 않는다.
 
 [Remote Sync]
-- 현재 보완 브랜치는 로컬 상태이며 push/PR 전이다.
+- PR #4: https://github.com/blueeye-3184/briefing/pull/4 (`OPEN`, merge state `CLEAN`).
+- 최종 head: `d89fa4c809b2739709c0c8fe57d386fe16def980`.
+- CI run 36430703669: `Unit Test & Verification Gate` 성공, `Run Daily Briefing` skip.
 - `origin/main`은 `dd164b0`; main 병합은 수행하지 않았다.
 
 [Security]
@@ -62,12 +64,11 @@
 - Low: 0 open
 
 [Risks]
-- PR CI가 아직 실행되지 않았다.
 - G5~G6 및 전체 통합 독립 검토가 남아 있다.
 - 운영 workflow/Notion read-back은 User 승인 전까지 미실행이다.
 
-[Next Eligible Agent] Agent B — G5~G6, 단 G1~G4 보완 브랜치의 push 및 PR CI 성공 후 착수
-[Next Terminal] 현재 Codex worktree 또는 User가 지정한 G5~G6 작업트리
+[Next Eligible Agent] Agent B — `d89fa4c` 기준 별도 후속 브랜치에서 G5~G6 착수
+[Next Terminal] User가 지정한 G5~G6 작업트리 또는 `d89fa4c`에서 새로 만든 별도 worktree
 [Next Model] KEEP_CURRENT
-[User Prompt] G1~G4 보완 PR의 CI 성공을 확인한 뒤 해당 head에서 G5~G6을 구현하세요. InfographicSpec 검증, headless PNG, Notion File Upload/image block/read-back, idempotent resume를 테스트·커밋·인계하고 운영 API는 실행하지 마세요.
+[User Prompt] PR #4를 열린 상태로 유지하고 `d89fa4c`에서 별도 후속 브랜치를 만드세요. G5~G6의 InfographicSpec 검증, headless PNG, Notion File Upload/image block/read-back, idempotent resume를 구현·테스트·독립 검토한 뒤 별도 PR과 CI를 확인하세요. 운영 API와 main 병합은 실행하지 마세요.
 [User Gate] PR 생성은 허용된 개발 흐름이다. main 병합과 운영 실행은 별도 User 승인 필요.

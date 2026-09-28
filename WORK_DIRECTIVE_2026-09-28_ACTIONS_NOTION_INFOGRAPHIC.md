@@ -478,6 +478,23 @@ Notion adapter 요구사항:
 
 G2~G4가 실행 상태 계약을 제공하므로 G5~G6보다 먼저 인터페이스를 확정한다. 병렬 개발 시 typed contract와 manifest schema를 먼저 합의·커밋한다. 에이전트는 범위를 넘어 운영 실행이나 main 병합을 임의 수행하지 않는다.
 
+### 7.1 G5~G6 착수 기준과 실행 순서
+
+G1~G4 보완 PR #4는 `OPEN` 상태로 유지하고 User의 별도 승인 전에는 병합하지 않는다. G5~G6은 PR #4의 CI 성공 head인 `d89fa4c809b2739709c0c8fe57d386fe16def980`에서 별도 후속 브랜치를 생성해 시작한다. 후속 브랜치에는 G5~G6 변경만 추가하고 PR #4의 이력을 재작성하지 않는다.
+
+실행 순서:
+
+1. `d89fa4c` 기준 후속 브랜치 생성과 baseline 전체 테스트
+2. G5 `InfographicSpec` validator, Ubuntu 24.04 headless PNG renderer, PNG 무결성 검증 구현
+3. Notion File Upload create/send/complete, image block attach, pagination read-back adapter 구현
+4. G6 decision/run key 조회, 부분 성공 resume, page/image 중복 방지 구현
+5. mock 기반 단위·실패 주입·동일 decision ID 2회 통합 테스트와 전체 회귀 테스트
+6. 구현 agent 인계 후 독립 검토, finding 보완, 별도 PR 생성
+7. PR CI의 test 성공과 production briefing job skip 확인
+8. User 승인 전 정지. main 병합, `workflow_dispatch`, 실제 Notion/Gemini/Slack 호출은 수행하지 않음
+
+예상 소요시간은 분석 20~40분, G5 70~130분, G6 30~60분, 전체 테스트·독립 검토·PR·CI 20~40분으로 총 2~4시간이다. Notion API 계약 또는 headless renderer 환경 차이 보완이 필요하면 4~6시간까지 확장될 수 있다. 이 시간에는 main 병합과 운영 검증을 포함하지 않는다.
+
 ---
 
 ## 8. 테스트와 PR 검증
@@ -545,7 +562,7 @@ PR URL, run ID/URL, head SHA를 인계서에 기록한다.
 | C6 | InfographicSpec/PNG | 테스트 + PNG | TODO |
 | C7 | Notion upload/image/read-back | mock + 승인 운영 실행 | TODO |
 | C8 | idempotency | 2회 실행 + 운영 확인 | TODO |
-| C9 | 전체 테스트/CI | 로컬 pytest 107/107 통과, diff clean; PR CI 미실행 | IN_PROGRESS |
+| C9 | 전체 테스트/CI | G1~G4 로컬 pytest 108/108 통과, PR #4 run 36430703669 test 성공·production skip; G5~G6 CI는 미실행 | IN_PROGRESS |
 | C10 | Critical/High 0건 | G1~G4 독립 검토 finding 전부 해결; G5~G6 검토 미수행 | IN_PROGRESS |
 | C11 | 운영 텍스트·이미지 확인 | 승인 run + Notion | TODO |
 
@@ -640,7 +657,7 @@ WORK_DIRECTIVE_2026-09-28_ACTIONS_NOTION_INFOGRAPHIC.md 전체를 읽고 최신 
 | G2 | Agent A | COMPLETE | 429 Retry-After, backoff, SearchStatus 분리, 가짜 보고서 차단 | Agent B |
 | G3 | Agent A | COMPLETE | 길이 초과 시 CONDENSE 축약, 상한 초과 시 fallback 중단, 시도 기록 | Agent B |
 | G4 | Agent A | COMPLETE | 실행 즉시 run.log/manifest.json 생성, 단계별 실패 주입 보존, 마스킹 | Agent B |
-| G1~G4 독립 검토 | Codex | COMPLETE | Action SHA 공식 tag 대조, 107 tests, Critical 1/High 2/Medium 1 해결 | 원격 push 및 PR CI 후 Agent B |
+| G1~G4 독립 검토 | Codex | COMPLETE | PR #4, head `d89fa4c`, 108 tests, run 36430703669 test 성공·production skip, Critical 1/High 2/Medium 1 해결 | `d89fa4c` 후속 브랜치에서 Agent B 착수 |
 | G5 | Agent B | TODO | PNG/File Upload/image/read-back 미구현 | Agent B |
 | G6 | Agent B | TODO | run/decision 중복 방지 미구현 | Agent B |
 | 독립 검토 | 미배정 | TODO | 구현 후 수행 | 검토 agent |
