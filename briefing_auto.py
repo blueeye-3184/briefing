@@ -1104,6 +1104,62 @@ class NotionPublisher:
             nodes.append({"type": "text", "text": {"content": text[cursor:]}})
         return nodes or [{"type": "text", "text": {"content": text}}]
 
+    @staticmethod
+    def _rich_text_length(nodes: List[Dict[str, Any]]) -> int:
+        return sum(
+            len(str(node.get("text", {}).get("content", "")))
+            for node in nodes
+        )
+
+    def _compact_blocks_for_budget(
+        self, blocks: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Pack adjacent body blocks without truncating text or link nodes.
+
+        Headings and dividers remain structural boundaries. Paragraph and list
+        runs are folded into newline-separated paragraphs whose rich text stays
+        below the conservative per-block text limit.
+        """
+        compacted: List[Dict[str, Any]] = []
+        pending_nodes: List[Dict[str, Any]] = []
+        pending_length = 0
+        mergeable_types = {"paragraph", "bulleted_list_item", "numbered_list_item"}
+
+        def flush_pending() -> None:
+            nonlocal pending_nodes, pending_length
+            if pending_nodes:
+                compacted.append({
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {"rich_text": pending_nodes},
+                })
+                pending_nodes = []
+                pending_length = 0
+
+        for block in blocks:
+            block_type = str(block.get("type", ""))
+            if block_type not in mergeable_types:
+                flush_pending()
+                compacted.append(block)
+                continue
+
+            nodes = list(block.get(block_type, {}).get("rich_text", []))
+            node_length = self._rich_text_length(nodes)
+            separator_length = 1 if pending_nodes else 0
+            if pending_nodes and (
+                pending_length + separator_length + node_length
+                > NOTION_SAFE_TEXT_LIMIT
+            ):
+                flush_pending()
+                separator_length = 0
+            if pending_nodes:
+                pending_nodes.append({"type": "text", "text": {"content": "\n"}})
+            pending_nodes.extend(nodes)
+            pending_length += separator_length + node_length
+
+        flush_pending()
+        return compacted
+
     def markdown_to_notion_blocks(self, content: str) -> List[Dict[str, Any]]:
         """지원 Markdown을 안전한 Notion 블록으로 변환하고 블록 예산을 검증."""
         blocks: List[Dict[str, Any]] = []
@@ -1139,9 +1195,17 @@ class NotionPublisher:
                 })
 
         if len(blocks) > NOTION_OPERATIONAL_BLOCK_LIMIT:
+            original_count = len(blocks)
+            blocks = self._compact_blocks_for_budget(blocks)
+            print(
+                f"[정보] Notion 블록 예산 압축: {original_count}개 -> {len(blocks)}개 "
+                f"(상한 {NOTION_OPERATIONAL_BLOCK_LIMIT}개, 본문 절단 없음)"
+            )
+
+        if len(blocks) > NOTION_OPERATIONAL_BLOCK_LIMIT:
             raise ValueError(
                 f"Notion 블록 {len(blocks)}개가 운영 상한 "
-                f"{NOTION_OPERATIONAL_BLOCK_LIMIT}개를 초과했습니다."
+                f"{NOTION_OPERATIONAL_BLOCK_LIMIT}개를 초과했고 안전하게 압축할 수 없습니다."
             )
         if len(blocks) > NOTION_REQUEST_BLOCK_LIMIT:
             raise ValueError("Notion 요청당 100블록 제한을 초과했습니다.")
