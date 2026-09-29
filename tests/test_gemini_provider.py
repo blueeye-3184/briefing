@@ -76,12 +76,23 @@ def test_call_api_uses_abstract_not_full_paper_and_enforces_token_budget():
     assert call_kwargs["config"].max_output_tokens == MAX_OUTPUT_TOKENS
 
 
-def test_call_api_rejects_body_outside_target_length():
+def test_call_api_accepts_body_below_desired_length():
     provider = GeminiProvider(api_key=None)
     provider.client = MagicMock()
     provider.client.models.count_tokens.return_value.total_tokens = 1_000
     provider.client.models.generate_content.return_value.text = "짧음"
 
-    with pytest.raises(ValueError, match="본문 길이"):
+    result = provider._call_api("models/gemini-3.8-flash", "테스트", [])
+
+    assert result == "짧음"
+
+
+def test_call_api_rejects_body_above_operational_limit():
+    provider = GeminiProvider(api_key=None)
+    provider.client = MagicMock()
+    provider.client.models.count_tokens.return_value.total_tokens = 1_000
+    provider.client.models.generate_content.return_value.text = "가" * 11_001
+
+    with pytest.raises(ValueError, match="운영 상한"):
         provider._call_api("models/gemini-3.8-flash", "테스트", [])
 
