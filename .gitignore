@@ -18,6 +18,9 @@ log list/
 loglist.txt
 inspect_notion.py
 
+# Artifacts
+artifacts/
+
 # Governance docs in 01_Standard_Procedures are tracked; local-only worktrees/data/secrets are ignored
 /01_Standard_Procedures/*
 !/01_Standard_Procedures/00.Governance_Directive.md

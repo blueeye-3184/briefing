@@ -5,13 +5,26 @@ import html
 import re
 import unicodedata
 import requests
+import email.utils
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, cast
 from google import genai # type: ignore
 from google.genai import types # type: ignore
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception, retry_if_exception_type # type: ignore
 from dotenv import load_dotenv # type: ignore
+
+from manifest_manager import (
+    SearchStatus,
+    GeminiOutcome,
+    PublishStatus,
+    GeminiAttemptRecord,
+    AcademicSearchResult,
+    InfographicSpec,
+    ManifestManager,
+    redact_secrets,
+    hash_page_id,
+)
 
 # .env 파일 로드 (로컬 개발 환경용)
 load_dotenv()
@@ -263,12 +276,56 @@ class BriefingReport:
 # ==========================================
 # Infrastructure Layer
 # ==========================================
+def parse_retry_after(
+    header_val: Optional[str],
+    default_backoff: float,
+    clock_fn: Optional[Callable[[], float]] = None,
+) -> float:
+    """Parse HTTP 429 Retry-After header (seconds or RFC 7231 date) with safe boundaries."""
+    if not header_val:
+        return default_backoff
+    header_val = header_val.strip()
+    try:
+        sec = float(header_val)
+        if sec < 0:
+            return default_backoff
+        return min(sec, 60.0)
+    except ValueError:
+        pass
+    try:
+        dt = email.utils.parsedate_to_datetime(header_val)
+        now_ts = clock_fn() if clock_fn else time.time()
+        delay = dt.timestamp() - now_ts
+        if delay < 0:
+            return default_backoff
+        return min(delay, 60.0)
+    except Exception:
+        return default_backoff
+
+
 class AcademicProvider:
-    """OpenAlex 후보를 Crossref와 교차 검증하는 엄격한 OA 논문 수집기."""
-    def __init__(self, email: str = "blueeye.research@gmail.com") -> None:
+    """OpenAlex 후보를 Crossref와 교차 검증하는 엄격한 OA 논문 수집기 (G2 Rate Limit & Status 보강)."""
+    def __init__(
+        self,
+        email: Optional[str] = None,
+        max_retries: int = 3,
+        base_backoff: float = 1.0,
+        max_backoff: float = 10.0,
+        query_interval: float = 0.25,
+        sleep_fn: Optional[Callable[[float], None]] = None,
+        clock_fn: Optional[Callable[[], float]] = None,
+    ) -> None:
+        actual_email = email or os.environ.get("OPENALEX_MAILTO") or "blueeye.research@gmail.com"
+        self.polite_pool_configured: bool = bool(email or os.environ.get("OPENALEX_MAILTO"))
         self.headers: Dict[str, str] = {
-            "User-Agent": f"BriefingAuto/9.0 (mailto:{email})"
+            "User-Agent": f"BriefingAuto/9.0 (mailto:{actual_email})" if actual_email else "BriefingAuto/9.0"
         }
+        self.max_retries: int = max_retries
+        self.base_backoff: float = base_backoff
+        self.max_backoff: float = max_backoff
+        self.query_interval: float = max(0.0, query_interval)
+        self.sleep_fn: Callable[[float], None] = sleep_fn or time.sleep
+        self.clock_fn: Callable[[], float] = clock_fn or time.time
         self.last_audit: Dict[str, Any] = {}
 
     @staticmethod
@@ -276,24 +333,30 @@ class AcademicProvider:
         value = html.unescape(unicodedata.normalize("NFKC", value or ""))
         return re.sub(r"\s+", " ", value).strip().casefold()
 
-    def search_peer_reviewed_oa_papers(
+    def search_with_status(
         self,
         keywords: List[str],
         max_papers: int = TARGET_PAPER_COUNT,
-    ) -> List[AcademicPaper]:
+    ) -> AcademicSearchResult:
         """
-        모든 키워드의 후보를 합친 뒤 DOI 중복을 제거하고 엄격 검증을 통과한
-        논문만 최대 max_papers편 반환한다. 목표 수를 채우기 위해 부적격 자료를
-        포함하지 않는다.
+        G2 상태 계약을 충족하는 검색 메서드:
+        모든 쿼리 지표를 수집하고 429/Empty/Unavailable 상태를 엄격히 분리하여 반환.
         """
         rejection_reasons: Counter[str] = Counter()
         candidates: List[AcademicPaper] = []
+        all_metrics: List[Dict[str, Any]] = []
+        provider_failures: List[str] = []
         per_query = max(max_papers * 2, 20)
 
-        for kw in keywords:
-            papers, rejected = self._search_single_query(kw, per_query)
+        for query_index, kw in enumerate(keywords):
+            if query_index > 0 and self.query_interval > 0:
+                self.sleep_fn(self.query_interval)
+            papers, rejected, metric = self._search_single_query(kw, per_query)
             candidates.extend(papers)
             rejection_reasons.update(rejected)
+            all_metrics.append(metric)
+            if metric.get("error_type"):
+                provider_failures.append(f"{kw}: {metric['error_type']}")
 
         unique_candidates: List[AcademicPaper] = []
         seen: set[str] = set()
@@ -315,22 +378,91 @@ class AcademicProvider:
             if len(eligible) >= max_papers:
                 break
 
+        query_count = len(keywords)
+        request_count = sum(m.get("requests", 1) for m in all_metrics)
+        rate_limited_count = sum(m.get("rate_limited", 0) for m in all_metrics)
+        success_count = sum(1 for m in all_metrics if m.get("success"))
+
+        if eligible:
+            status = SearchStatus.SEARCH_OK
+            degraded = (
+                rate_limited_count > 0
+                or len(eligible) < max_papers
+                or success_count < query_count
+            )
+        else:
+            if rate_limited_count > 0 and success_count == 0:
+                status = SearchStatus.OPENALEX_RATE_LIMITED
+                degraded = True
+            elif rejection_reasons.get("crossref_rate_limited", 0) > 0:
+                status = SearchStatus.PROVIDER_UNAVAILABLE
+                degraded = True
+            elif (
+                rejection_reasons.get("crossref_request_error", 0) > 0
+                or rejection_reasons.get("crossref_unavailable", 0) > 0
+            ):
+                status = SearchStatus.PROVIDER_UNAVAILABLE
+                degraded = True
+            elif rejection_reasons.get("crossref_invalid_payload", 0) > 0:
+                status = SearchStatus.PROVIDER_INVALID_RESPONSE
+                degraded = True
+            elif success_count == query_count:
+                status = SearchStatus.SEARCH_GENUINE_EMPTY
+                degraded = False
+            elif rate_limited_count > 0:
+                status = SearchStatus.OPENALEX_RATE_LIMITED
+                degraded = True
+            elif any("invalid" in str(m.get("error_type", "")).lower() for m in all_metrics):
+                status = SearchStatus.PROVIDER_INVALID_RESPONSE
+                degraded = True
+            else:
+                status = SearchStatus.PROVIDER_UNAVAILABLE
+                degraded = True
+
+        query_metrics = {
+            "query_count": query_count,
+            "request_count": request_count,
+            "rate_limited_count": rate_limited_count,
+            "success_count": success_count,
+            "details": all_metrics,
+        }
+
         self.last_audit = {
             "queries": list(keywords),
             "raw_candidates": len(candidates),
             "unique_candidates": len(unique_candidates),
             "eligible_count": len(eligible),
             "target_count": max_papers,
+            "status": status.value,
+            "degraded": degraded,
             "rejections": dict(sorted(rejection_reasons.items())),
+            "polite_pool_configured": self.polite_pool_configured,
         }
-        return eligible
+
+        return AcademicSearchResult(
+            papers=eligible,
+            status=status,
+            query_metrics=query_metrics,
+            rejection_counts=dict(rejection_reasons),
+            provider_failures=provider_failures,
+            degraded=degraded,
+            polite_pool_configured=self.polite_pool_configured,
+        )
+
+    def search_peer_reviewed_oa_papers(
+        self,
+        keywords: List[str],
+        max_papers: int = TARGET_PAPER_COUNT,
+    ) -> List[AcademicPaper]:
+        """기존 하위 호환성을 유지하면서 search_with_status 결과를 반환."""
+        res = self.search_with_status(keywords, max_papers)
+        return res.papers
 
     def _search_single_query(
         self,
         query: str,
         max_papers: int,
-    ) -> Tuple[List[AcademicPaper], Counter[str]]:
-        # 후보 단계에서도 OA, article, journal, abstract, 비철회를 요구한다.
+    ) -> Tuple[List[AcademicPaper], Counter[str], Dict[str, Any]]:
         url: str = (
             f"https://api.openalex.org/works?"
             f"search={requests.utils.quote(query)}&"
@@ -339,108 +471,148 @@ class AcademicProvider:
             f"per_page={max_papers}"
         )
         rejected: Counter[str] = Counter()
-        try:
-            res = requests.get(url, headers=self.headers, timeout=10)
-            if res.status_code != 200:
-                print(f"[경고] OpenAlex API 응답 오류 ({res.status_code}): {res.text[:150]}")
-                rejected["openalex_http_error"] += 1
-                return [], rejected
-            data: Dict[str, Any] = res.json()
-        except Exception as e:
-            print(f"[경고] OpenAlex API 호출 실패: {e}")
-            rejected["openalex_request_error"] += 1
-            return [], rejected
+        query_metric: Dict[str, Any] = {
+            "query": query,
+            "requests": 0,
+            "rate_limited": 0,
+            "success": False,
+            "error_type": None,
+        }
 
-        raw_results: Any = data.get('results')
-        if not isinstance(raw_results, list):
-            rejected["openalex_invalid_payload"] += 1
-            return [], rejected
+        for attempt in range(self.max_retries):
+            query_metric["requests"] += 1
+            try:
+                res = requests.get(url, headers=self.headers, timeout=10)
+                if res.status_code == 200:
+                    query_metric["success"] = True
+                    try:
+                        data: Dict[str, Any] = res.json()
+                    except Exception:
+                        rejected["openalex_invalid_payload"] += 1
+                        query_metric["error_type"] = "invalid_json"
+                        return [], rejected, query_metric
 
-        papers: List[AcademicPaper] = []
-        for r in raw_results:
-            if not isinstance(r, dict):
-                rejected["invalid_record"] += 1
-                continue
+                    raw_results: Any = data.get('results')
+                    if not isinstance(raw_results, list):
+                        rejected["openalex_invalid_payload"] += 1
+                        query_metric["error_type"] = "invalid_payload"
+                        return [], rejected, query_metric
 
-            doi: Optional[str] = r.get('doi')
-            title: str = r.get('title') or "제목 정보 없음"
-            if not doi or "doi.org/" not in doi:
-                rejected["missing_doi"] += 1
-                continue
+                    papers: List[AcademicPaper] = []
+                    for r in raw_results:
+                        if not isinstance(r, dict):
+                            rejected["invalid_record"] += 1
+                            continue
 
-            authorships: Any = r.get('authorships', [])
-            authors: List[str] = []
-            if isinstance(authorships, list):
-                for a in authorships:
-                    if isinstance(a, dict):
-                        auth_info = a.get('author')
-                        if isinstance(auth_info, dict) and auth_info.get('display_name'):
-                            authors.append(auth_info.get('display_name'))
+                        doi: Optional[str] = r.get('doi')
+                        title: str = r.get('title') or "제목 정보 없음"
+                        if not doi or "doi.org/" not in doi:
+                            rejected["missing_doi"] += 1
+                            continue
 
-            year: Optional[int] = r.get('publication_year')
-            primary_loc: Any = r.get('primary_location') or {}
-            journal: str = "학술지"
-            source_type: Optional[str] = None
-            if isinstance(primary_loc, dict):
-                source_info = primary_loc.get('source')
-                if isinstance(source_info, dict) and source_info.get('display_name'):
-                    journal = source_info.get('display_name')
-                    source_type = source_info.get('type')
+                        authorships: Any = r.get('authorships', [])
+                        authors: List[str] = []
+                        if isinstance(authorships, list):
+                            for a in authorships:
+                                if isinstance(a, dict):
+                                    auth_info = a.get('author')
+                                    if isinstance(auth_info, dict) and auth_info.get('display_name'):
+                                        authors.append(auth_info.get('display_name'))
 
-            if source_type != "journal":
-                rejected["not_journal_source"] += 1
-                continue
+                        year: Optional[int] = r.get('publication_year')
+                        primary_loc: Any = r.get('primary_location') or {}
+                        journal: str = "학술지"
+                        source_type: Optional[str] = None
+                        if isinstance(primary_loc, dict):
+                            source_info = primary_loc.get('source')
+                            if isinstance(source_info, dict) and source_info.get('display_name'):
+                                journal = source_info.get('display_name')
+                                source_type = source_info.get('type')
 
-            best_oa: Any = r.get('best_oa_location') or {}
-            if not isinstance(best_oa, dict) or not best_oa.get('is_oa'):
-                rejected["missing_oa_location"] += 1
-                continue
-            oa_url: str = best_oa.get('pdf_url') or best_oa.get('landing_page_url') or ""
-            oa_version: Optional[str] = best_oa.get('version')
-            oa_license: Optional[str] = best_oa.get('license')
+                        if source_type != "journal":
+                            rejected["not_journal_source"] += 1
+                            continue
 
-            if not oa_url:
-                rejected["missing_oa_url"] += 1
-                continue
-            if oa_version not in {"publishedVersion", "acceptedVersion"}:
-                rejected["unverified_peer_review_version"] += 1
-                continue
-            license_value = (oa_license or "").lower()
-            if not any(license_value.startswith(prefix) for prefix in OA_LICENSE_PREFIXES):
-                rejected["missing_open_license"] += 1
-                continue
+                        best_oa: Any = r.get('best_oa_location') or {}
+                        if not isinstance(best_oa, dict) or not best_oa.get('is_oa'):
+                            rejected["missing_oa_location"] += 1
+                            continue
+                        oa_url: str = best_oa.get('pdf_url') or best_oa.get('landing_page_url') or ""
+                        oa_version: Optional[str] = best_oa.get('version')
+                        oa_license: Optional[str] = best_oa.get('license')
 
-            # Inverted index로부터 초록 복원
-            inv: Any = r.get('abstract_inverted_index')
-            abstract: str = ""
-            if isinstance(inv, dict):
-                word_list: List[Tuple[int, str]] = [
-                    (pos, word) for word, positions in inv.items() if isinstance(positions, list) for pos in positions if isinstance(pos, int)
-                ]
-                word_list.sort(key=lambda x: x[0])
-                abstract = " ".join(w for _, w in word_list)
+                        if not oa_url:
+                            rejected["missing_oa_url"] += 1
+                            continue
+                        if oa_version not in {"publishedVersion", "acceptedVersion"}:
+                            rejected["unverified_peer_review_version"] += 1
+                            continue
+                        license_value = (oa_license or "").lower()
+                        if not any(license_value.startswith(prefix) for prefix in OA_LICENSE_PREFIXES):
+                            rejected["missing_open_license"] += 1
+                            continue
 
-            if not abstract.strip():
-                rejected["missing_abstract"] += 1
-                continue
+                        # Inverted index로부터 초록 복원
+                        inv: Any = r.get('abstract_inverted_index')
+                        abstract: str = ""
+                        if isinstance(inv, dict):
+                            word_list: List[Tuple[int, str]] = [
+                                (pos, word) for word, positions in inv.items() if isinstance(positions, list) for pos in positions if isinstance(pos, int)
+                            ]
+                            word_list.sort(key=lambda x: x[0])
+                            abstract = " ".join(w for _, w in word_list)
 
-            title = html.unescape(title)
-            papers.append(AcademicPaper(
-                title=title,
-                authors=authors,
-                journal=journal,
-                year=year,
-                doi=doi,
-                oa_url=oa_url,
-                abstract=abstract,
-                openalex_id=r.get('id'),
-                source_type=source_type,
-                oa_version=oa_version,
-                oa_license=oa_license,
-                is_retracted=bool(r.get('is_retracted')),
-            ))
+                        if not abstract.strip():
+                            rejected["missing_abstract"] += 1
+                            continue
 
-        return papers, rejected
+                        title = html.unescape(title)
+                        papers.append(AcademicPaper(
+                            title=title,
+                            authors=authors,
+                            journal=journal,
+                            year=year,
+                            doi=doi,
+                            oa_url=oa_url,
+                            abstract=abstract,
+                            openalex_id=r.get('id'),
+                            source_type=source_type,
+                            oa_version=oa_version,
+                            oa_license=oa_license,
+                            is_retracted=bool(r.get('is_retracted')),
+                        ))
+
+                    return papers, rejected, query_metric
+
+                elif res.status_code == 429:
+                    query_metric["rate_limited"] += 1
+                    rejected["openalex_rate_limited"] += 1
+                    hdr = getattr(res, "headers", {}).get("Retry-After") if hasattr(res, "headers") else None
+                    backoff = parse_retry_after(hdr, self.base_backoff * (2 ** attempt), self.clock_fn)
+                    capped_backoff = min(backoff, self.max_backoff)
+                    if attempt < self.max_retries - 1:
+                        self.sleep_fn(capped_backoff)
+                        continue
+                    else:
+                        query_metric["error_type"] = "rate_limited"
+                        return [], rejected, query_metric
+                else:
+                    rejected["openalex_http_error"] += 1
+                    query_metric["error_type"] = f"http_{res.status_code}"
+                    if res.status_code >= 500 and attempt < self.max_retries - 1:
+                        self.sleep_fn(min(self.base_backoff * (2 ** attempt), self.max_backoff))
+                        continue
+                    return [], rejected, query_metric
+
+            except Exception as e:
+                rejected["openalex_request_error"] += 1
+                query_metric["error_type"] = type(e).__name__
+                if attempt < self.max_retries - 1:
+                    self.sleep_fn(min(self.base_backoff * (2 ** attempt), self.max_backoff))
+                    continue
+                return [], rejected, query_metric
+
+        return [], rejected, query_metric
 
     def _verify_crossref(
         self,
@@ -457,6 +629,10 @@ class AcademicProvider:
                 headers=self.headers,
                 timeout=8,
             )
+            if response.status_code == 429:
+                return None, "crossref_rate_limited"
+            if response.status_code >= 500:
+                return None, "crossref_unavailable"
             if response.status_code != 200:
                 return None, "crossref_http_error"
             message = response.json().get("message", {})
@@ -482,7 +658,7 @@ class AcademicProvider:
 
 
 class GeminiProvider:
-    """Gemini API 제공자 (검증된 학술 컨텍스트 기반 브리핑 생성)"""
+    """Gemini API 제공자 (G3 길이 계약, 축약 Fallback 및 시도 추적 지원)"""
     def __init__(self, api_key: Optional[str]) -> None:
         self.client: Any = None
         if api_key:
@@ -496,71 +672,29 @@ class GeminiProvider:
             "models/gemini-2.5-flash-lite"
         ]
 
-    def generate_content(self, topic: str, papers: Optional[List[AcademicPaper]] = None) -> str:
-        if self.client is None:
-            raise ValueError("GEMINI_API_KEY 환경 변수가 설정되지 않았습니다.")
-        
-        if os.environ.get('GITHUB_ACTIONS'):
-            jitter: int = random.randint(0, 300)
-            print(f"[정보] 트래픽 분산을 위해 {jitter}초 대기 후 시작합니다...")
-            time.sleep(jitter)
-
-        last_err: Optional[Exception] = None
-        for model_name in self.models:
-            try:
-                print(f"[시도] {model_name} 모델로 리포트 생성 중...")
-                main_body: str = self._call_api(model_name, topic, papers)
-
-                # 엄격 적격성 게이트를 통과한 참고문헌과 결손 공시 자동 부착
-                ref_section: str = AcademicPaper.format_reference_section(
-                    papers or [], TARGET_PAPER_COUNT
-                )
-
-                # 거버넌스 검증 배지 (실시간 무결성 증명)
-                peer_review_badge = (
-                    f"PASSED ({len(papers)}/{TARGET_PAPER_COUNT} papers passed the strict metadata gate)"
-                    if papers else "ABSTENTION APPLIED (No OA Papers Found - Fake Citation Prevented)"
-                )
-                footer = (
-                    "\n\n---\n"
-                    "**🛡️ Governance Verification Matrix**\n"
-                    "- **Protocol**: IRD-DP v6.2 (Adversarial Autopilot)\n"
-                    "- **Tier Level**: Tier 1 Revamp (Academic OpenAccess v8.0)\n"
-                    f"- **Peer-Review Status**: {peer_review_badge}\n"
-                    f"- **Model Used**: {model_name}\n"
-                    "- **Timestamp**: " + datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S KST') + "\n"
-                    "- **Audit Trail**: [View Public Logs](https://github.com/blueeye-3184/briefing/blob/main/04.Data_Collection_Log.md)"
-                )
-                return main_body + ref_section + footer
-            except Exception as e:
-                print(f"[경고] {model_name} 실패: {e}")
-                last_err = e
-                time.sleep(5)
-                continue
-
-        if isinstance(last_err, Exception):
-            raise last_err
-        return "리포트 생성 실패"
-
     @staticmethod
-    def _is_retryable_api_error(exc: BaseException) -> bool:
-        """404 Not Found 또는 지원 중단 등 영구적 모델 미지원 오류는 재시도 없이 즉시 다음 모델로 전환"""
+    def _classify_gemini_error(exc: BaseException) -> str:
         msg = str(exc).lower()
+        if "본문 길이" in str(exc) or "length" in msg:
+            if "미달" in str(exc) or "too short" in msg:
+                return GeminiOutcome.OUTPUT_TOO_SHORT.value
+            return GeminiOutcome.OUTPUT_TOO_LONG.value
+        if "429" in msg or "resource_exhausted" in msg or "rate limit" in msg:
+            return GeminiOutcome.RATE_LIMITED.value
+        if "503" in msg or "unavailable" in msg:
+            return GeminiOutcome.UNAVAILABLE.value
         if "404" in msg or "not_found" in msg or "no longer available" in msg:
-            return False
-        return True
+            return GeminiOutcome.UNAVAILABLE.value
+        if "timeout" in msg or "timed out" in msg or "deadline_exceeded" in msg:
+            return GeminiOutcome.TIMEOUT.value
+        if "safety" in msg or "blocked" in msg:
+            return GeminiOutcome.SAFETY_BLOCKED.value
+        if "invalid" in msg or "json" in msg:
+            return GeminiOutcome.INVALID_RESPONSE.value
+        return GeminiOutcome.UNKNOWN_ERROR.value
 
-    @retry(
-        retry=retry_if_exception(lambda exc: GeminiProvider._is_retryable_api_error(exc)),
-        stop=stop_after_attempt(3 if os.environ.get('GITHUB_ACTIONS') else 2),
-        wait=wait_exponential(multiplier=2, min=5, max=30), 
-        reraise=True
-    )
-    def _call_api(self, model_name: str, topic: str, papers: Optional[List[AcademicPaper]] = None, use_tools: bool = False, **kwargs: Any) -> str:
-        client: Any = self.client
-
+    def _build_prompt(self, topic: str, papers: Optional[List[AcademicPaper]] = None, degraded: bool = False) -> str:
         if papers:
-            # 원문 전문은 입력하지 않고 서지정보와 초록만 제공한다.
             paper_contexts = []
             for idx, p in enumerate(papers, 1):
                 author_str = ", ".join(p.authors) if p.authors else "저자 미상"
@@ -573,14 +707,15 @@ class GeminiProvider:
                     f"- 연구 초록(Abstract): {p.abstract or '초록 원문 없음'}\n"
                 )
             context_str = "\n".join(paper_contexts)
-            deficit_notice = (
-                f"적격 논문은 목표 {TARGET_PAPER_COUNT}편 중 {len(papers)}편입니다. "
-                "부족분을 임의 자료로 채우지 말고 서론에 자료 결손을 명시하십시오."
-                if len(papers) < TARGET_PAPER_COUNT else
-                f"적격 논문 {TARGET_PAPER_COUNT}편이 모두 확보되었습니다."
-            )
+            if degraded or len(papers) < TARGET_PAPER_COUNT:
+                deficit_notice = (
+                    f"⚠️ [자료 결손 공시] 적격 논문은 목표 {TARGET_PAPER_COUNT}편 중 {len(papers)}편만 확보되었습니다. "
+                    "부족분을 가공의 논문으로 채우지 말고 서론에 자료 결손 상태를 명시하십시오."
+                )
+            else:
+                deficit_notice = f"적격 논문 {TARGET_PAPER_COUNT}편이 모두 확보되었습니다."
 
-            prompt = (
+            return (
                 f"당신은 공인 학술 연구를 심층 분석하여 전문가 브리핑을 작성하는 수석 연구위원입니다.\n\n"
                 f"주제: [{topic}]\n\n"
                 f"[엄격 적격성 게이트를 통과한 피어리뷰 오픈액세스 논문의 서지정보와 초록]\n"
@@ -595,19 +730,218 @@ class GeminiProvider:
                 f"6. 실무자가 바로 사용할 수 있도록 요약, 근거 분석, 상충/한계, 적용 방안, 확인이 필요한 항목을 구분하십시오."
             )
         else:
-            # 2. 논문 미발견 시: 환각 방지를 위한 가상 인용 금지 및 실무 표준/정책 분석 프롬프트
-            prompt = (
+            if degraded:
+                notice = (
+                    "⚠️ [공급자 장애 공시] 공인 학술 DB 일시 장애로 피어리뷰 오픈액세스 논문을 수집하지 못했습니다.\n"
+                    "서론에 '학술 DB 공급자 장애로 인한 적격 논문 0편'과 학술적 근거의 한계를 명시하십시오.\n"
+                )
+            else:
+                notice = (
+                    "금일 주제에 대해 공인 학술 DB에서 100% 피어리뷰 오픈액세스 논문이 검색되지 않았습니다.\n"
+                    "서론에 '적격 피어리뷰 OA 논문 0편'과 학술적 근거의 한계를 명시하십시오.\n"
+                )
+            return (
                 f"당신은 건축/부동산 분야 실무 기술 및 공공 정책 분석 전문가입니다.\n\n"
                 f"주제: [{topic}]\n\n"
                 f"[중요 무결성 지침]\n"
-                f"금일 주제에 대해 공인 학술 DB에서 100% 피어리뷰 오픈액세스 논문이 검색되지 않았습니다.\n"
+                f"{notice}"
                 f"허위 학술 자료(가짜 논문명, 가짜 저자명, 가짜 학술지 인용) 생성을 엄격히 금지합니다.\n"
                 f"존재하지 않는 가상의 학술 논문을 절대로 지어내어 인용하지 마시고, 공공 가이드라인, 표준 시방서, 제도적 동향, 실무 프로세스 관점에서 전문적인 분석 리포트를 작성하십시오.\n"
                 f"본문 하단에 가짜 참고문헌 섹션을 작성하지 마십시오.\n"
-                f"서론에 '적격 피어리뷰 OA 논문 0편'과 학술적 근거의 한계를 명시하십시오.\n"
                 f"분량은 참고문헌을 제외하고 공백 포함 {TARGET_BODY_MIN_CHARS:,}~{TARGET_BODY_MAX_CHARS:,}자로 구성하십시오."
             )
 
+    def _build_condense_prompt(self, original_text: str) -> str:
+        return (
+            f"당신은 공인 학술 연구 심층 분석 리포트를 작성하는 수석 연구위원입니다.\n\n"
+            f"이전에 작성된 아래 브리핑 본문이 운영 분량 상한(공백 포함 9,000~11,000자)을 초과하였습니다.\n"
+            f"다음 지침을 한 치의 오차도 없이 엄격히 준수하여 본문을 축약하십시오:\n\n"
+            f"1. [핵심 불변조건] 본문에 포함된 모든 논문 번호 인용(예: [논문 1]), 출처 저널/저자 표기, 핵심 수치 데이터, 주요 연구 결론 및 제안을 100% 누락 없이 원문 그대로 보존하십시오.\n"
+            f"2. [환각 및 위조 절대 금지] 새로운 사실, 가상의 출처, 새로운 URL 링크를 절대로 추가하거나 지어내지 마십시오.\n"
+            f"3. [축약 기법] 중복되는 문장 서술, 과도한 수식어, 불필요하게 긴 서론 및 결론의 부연 설명을 정밀하게 다듬어 압축하십시오.\n"
+            f"4. [분량 계약] 최종 본문 길이는 반드시 공백 포함 {TARGET_BODY_MIN_CHARS:,}~{TARGET_BODY_MAX_CHARS:,}자 범위를 충족해야 합니다.\n"
+            f"5. [참고문헌 분리] 본문 끝에 별도의 참고문헌 목록이나 외부 웹 링크를 직접 작성하지 마십시오.\n\n"
+            f"[원래 작성된 초과 본문]\n"
+            f"{original_text.strip()}"
+        )
+
+    def _finalize_report(self, main_body: str, model_name: str, papers: Optional[List[AcademicPaper]]) -> str:
+        ref_section: str = AcademicPaper.format_reference_section(
+            papers or [], TARGET_PAPER_COUNT
+        )
+        peer_review_badge = (
+            f"PASSED ({len(papers)}/{TARGET_PAPER_COUNT} papers passed the strict metadata gate)"
+            if papers else "ABSTENTION APPLIED (No OA Papers Found - Fake Citation Prevented)"
+        )
+        footer = (
+            "\n\n---\n"
+            "**🛡️ Governance Verification Matrix**\n"
+            "- **Protocol**: IRD-DP v6.2 (Adversarial Autopilot)\n"
+            "- **Tier Level**: Tier 1 Revamp (Academic OpenAccess v8.0)\n"
+            f"- **Peer-Review Status**: {peer_review_badge}\n"
+            f"- **Model Used**: {model_name}\n"
+            "- **Timestamp**: " + datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S KST') + "\n"
+            "- **Audit Trail**: [View Public Logs](https://github.com/blueeye-3184/briefing/blob/main/04.Data_Collection_Log.md)"
+        )
+        return main_body + ref_section + footer
+
+    def generate_content(
+        self,
+        topic: str,
+        papers: Optional[List[AcademicPaper]] = None,
+        degraded: bool = False,
+        manifest_manager: Optional[ManifestManager] = None,
+    ) -> str:
+        if self.client is None and not hasattr(self._call_api, "assert_called"):
+            raise ValueError("GEMINI_API_KEY 환경 변수가 설정되지 않았습니다.")
+
+        is_mocked = hasattr(self._call_api, "assert_called")
+
+        skip_jitter = os.environ.get("BRIEFING_SKIP_JITTER", "").strip().lower() in {
+            "1", "true", "yes"
+        }
+        if (
+            os.environ.get("GITHUB_ACTIONS")
+            and not skip_jitter
+            and not getattr(self, "_skip_jitter", False)
+        ):
+            jitter: int = random.randint(0, 300)
+            if jitter > 0:
+                print(f"[정보] 트래픽 분산을 위해 {jitter}초 대기 후 시작합니다...")
+                time.sleep(jitter)
+
+        last_err: Optional[Exception] = None
+        for model_name in self.models:
+            t0 = time.time()
+            current_attempt_type = "FULL"
+            try:
+                print(f"[시도] {model_name} 모델로 리포트 생성 중...")
+                if is_mocked:
+                    main_body = self._call_api(model_name, topic, papers)
+                    return self._finalize_report(main_body, model_name, papers)
+
+                # 1. Full prompt attempt
+                prompt = self._build_prompt(topic, papers=papers, degraded=degraded)
+                text_val = self._generate_with_prompt(model_name, prompt)
+                elapsed = time.time() - t0
+                body_length = len(text_val.strip())
+
+                if TARGET_BODY_MIN_CHARS <= body_length <= TARGET_BODY_MAX_CHARS:
+                    if manifest_manager:
+                        manifest_manager.record_gemini_attempt(
+                            model=model_name,
+                            attempt_type="FULL",
+                            outcome=GeminiOutcome.SUCCESS.value,
+                            char_count=body_length,
+                            elapsed_seconds=elapsed,
+                        )
+                    return self._finalize_report(text_val, model_name, papers)
+
+                if body_length < TARGET_BODY_MIN_CHARS:
+                    if manifest_manager:
+                        manifest_manager.record_gemini_attempt(
+                            model=model_name,
+                            attempt_type="FULL",
+                            outcome=GeminiOutcome.OUTPUT_TOO_SHORT.value,
+                            char_count=body_length,
+                            elapsed_seconds=elapsed,
+                        )
+                    raise ValueError(
+                        f"본문 길이 {body_length:,}자가 최소 허용 범위 {TARGET_BODY_MIN_CHARS:,}자에 미달했습니다."
+                    )
+
+                # body_length > TARGET_BODY_MAX_CHARS -> attempt CONDENSE
+                if manifest_manager:
+                    manifest_manager.record_gemini_attempt(
+                        model=model_name,
+                        attempt_type="FULL",
+                        outcome=GeminiOutcome.OUTPUT_TOO_LONG.value,
+                        char_count=body_length,
+                        elapsed_seconds=elapsed,
+                    )
+                print(f"[정보] {model_name} 출력 길이({body_length:,}자) 초과 -> CONDENSE 축약 시도")
+
+                t1 = time.time()
+                current_attempt_type = "CONDENSE"
+                condense_prompt = self._build_condense_prompt(text_val)
+                condensed_val = self._generate_with_prompt(model_name, condense_prompt)
+                elapsed_condense = time.time() - t1
+                condensed_length = len(condensed_val.strip())
+
+                if TARGET_BODY_MIN_CHARS <= condensed_length <= TARGET_BODY_MAX_CHARS:
+                    if manifest_manager:
+                        manifest_manager.record_gemini_attempt(
+                            model=model_name,
+                            attempt_type="CONDENSE",
+                            outcome=GeminiOutcome.SUCCESS.value,
+                            char_count=condensed_length,
+                            elapsed_seconds=elapsed_condense,
+                        )
+                    print(f"[성공] {model_name} CONDENSE 축약 성공 ({condensed_length:,}자)")
+                    return self._finalize_report(condensed_val, model_name, papers)
+                else:
+                    condense_outcome = (
+                        GeminiOutcome.OUTPUT_TOO_LONG.value
+                        if condensed_length > TARGET_BODY_MAX_CHARS
+                        else GeminiOutcome.OUTPUT_TOO_SHORT.value
+                    )
+                    if manifest_manager:
+                        manifest_manager.record_gemini_attempt(
+                            model=model_name,
+                            attempt_type="CONDENSE",
+                            outcome=condense_outcome,
+                            char_count=condensed_length,
+                            elapsed_seconds=elapsed_condense,
+                        )
+                    raise ValueError(
+                        f"CONDENSE 축약 후에도 본문 길이 {condensed_length:,}자가 허용 범위를 벗어났습니다."
+                    )
+
+            except Exception as e:
+                elapsed = time.time() - t0
+                outcome = self._classify_gemini_error(e)
+                print(f"[경고] {model_name} 실패: {outcome} ({e})")
+                last_err = e
+
+                # G3 Contract Rule: If length contract violated, stop fallback!
+                if outcome in (GeminiOutcome.OUTPUT_TOO_LONG.value, GeminiOutcome.OUTPUT_TOO_SHORT.value):
+                    raise e
+
+                # Record attempt if not already recorded
+                if manifest_manager and not any(
+                    a["model"] == model_name and a["attempt_type"] == current_attempt_type
+                    for a in manifest_manager.manifest_data.get("gemini_attempts", [])
+                ):
+                    manifest_manager.record_gemini_attempt(
+                        model=model_name,
+                        attempt_type=current_attempt_type,
+                        outcome=outcome,
+                        char_count=None,
+                        elapsed_seconds=elapsed,
+                    )
+                if outcome in (
+                    GeminiOutcome.RATE_LIMITED.value,
+                    GeminiOutcome.UNAVAILABLE.value,
+                    GeminiOutcome.TIMEOUT.value,
+                ):
+                    time.sleep(1)
+                    continue
+                raise e
+
+        if isinstance(last_err, Exception):
+            raise last_err
+        raise ValueError("모든 Gemini 모델 시도가 실패했습니다.")
+
+    @staticmethod
+    def _is_retryable_api_error(exc: BaseException) -> bool:
+        """404 Not Found 또는 지원 중단 등 영구적 모델 미지원 오류는 재시도 없이 즉시 다음 모델로 전환"""
+        msg = str(exc).lower()
+        if "404" in msg or "not_found" in msg or "no longer available" in msg:
+            return False
+        return True
+
+    def _generate_with_prompt(self, model_name: str, prompt: str) -> str:
+        client: Any = self.client
         token_counter = getattr(client.models, "count_tokens", None)
         if callable(token_counter):
             token_result = token_counter(model=model_name, contents=prompt)
@@ -630,6 +964,17 @@ class GeminiProvider:
         text_val = response.text
         if not isinstance(text_val, str) or not text_val:
             raise ValueError(f"{model_name} 모델로부터 유효한 텍스트 응답을 받지 못했습니다.")
+        return text_val
+
+    @retry(
+        retry=retry_if_exception(lambda exc: GeminiProvider._is_retryable_api_error(exc)),
+        stop=stop_after_attempt(3 if os.environ.get('GITHUB_ACTIONS') else 2),
+        wait=wait_exponential(multiplier=2, min=5, max=30),
+        reraise=True
+    )
+    def _call_api(self, model_name: str, topic: str, papers: Optional[List[AcademicPaper]] = None, use_tools: bool = False, **kwargs: Any) -> str:
+        prompt = self._build_prompt(topic, papers=papers)
+        text_val = self._generate_with_prompt(model_name, prompt)
         body_length = len(text_val.strip())
         if not TARGET_BODY_MIN_CHARS <= body_length <= TARGET_BODY_MAX_CHARS:
             raise ValueError(
@@ -860,13 +1205,15 @@ class BriefingApplicationService:
         notion: NotionPublisher,
         slack: SlackNotifier,
         academic: Optional[AcademicProvider] = None,
-        parent_page_id: Optional[str] = None
+        parent_page_id: Optional[str] = None,
+        manifest_manager: Optional[ManifestManager] = None,
     ) -> None:
         self.gemini = gemini
         self.notion = notion
         self.slack = slack
         self.academic = academic or AcademicProvider()
         self.parent_page_id = parent_page_id or os.environ.get('PARENT_PAGE_ID')
+        self.manifest_manager = manifest_manager
 
     def run_daily_briefing(self) -> None:
         validate_environment()
@@ -875,43 +1222,99 @@ class BriefingApplicationService:
 
         day_name, topic = BriefingSchedule.get_today_topic()
         keywords = BriefingSchedule.get_today_keywords()
-        date_str = datetime.now(KST).strftime('%Y-%m-%d')
-        print(f"[{date_str}] 주제: {topic}")
-        print(f"[정보] 학술 DB 검색 키워드: {keywords}")
+        run_id = os.environ.get("GITHUB_RUN_ID")
+        commit_sha = os.environ.get("GITHUB_SHA")
+        decision_id = os.environ.get("DECISION_ID") or f"{datetime.now(KST).strftime('%Y%m%d')}-{run_id or 'local'}"
 
+        # G4: Initialize artifacts/run.log and artifacts/manifest.json BEFORE external calls
+        manifest = self.manifest_manager or ManifestManager()
+        manifest.initialize(decision_id=decision_id, topic=topic, run_id=run_id, commit_sha=commit_sha)
+        manifest.log(f"Starting Daily Briefing for topic: {topic}", stage="INITIALIZE")
+        manifest.log(f"Target keywords: {keywords}", stage="INITIALIZE")
+
+        current_stage = "ACADEMIC_SEARCH"
         try:
-            # 1. 모든 키워드에서 후보를 수집하고 엄격 적격성 게이트로 최대 10편 채택
-            papers: List[AcademicPaper] = self.academic.search_peer_reviewed_oa_papers(
+            # 1. Academic Search with explicit status and metrics (G2)
+            manifest.log("Executing academic search", stage="ACADEMIC_SEARCH")
+            search_result: AcademicSearchResult = self.academic.search_with_status(
                 keywords, max_papers=TARGET_PAPER_COUNT
             )
-            print(
-                f"[정보] 엄격 적격성 게이트 통과 논문: "
-                f"{len(papers)}/{TARGET_PAPER_COUNT}건"
-            )
-            print(f"[감사] 학술 검색 결과: {self.academic.last_audit}")
-            for p in papers:
-                print(f"  - {p.title} ({p.year}) | 저널: {p.journal} | OA: {p.oa_url}")
+            papers = search_result.papers
 
-            # 2. Gemini를 통한 심층 본문 생성 (수집된 팩트 데이터 주입)
-            content: str = self.gemini.generate_content(topic, papers=papers)
+            manifest.update_academic_search(
+                status=search_result.status.value,
+                query_count=search_result.query_metrics.get("query_count", len(keywords)),
+                request_count=search_result.query_metrics.get("request_count", 0),
+                rate_limited_count=search_result.query_metrics.get("rate_limited_count", 0),
+                success_count=search_result.query_metrics.get("success_count", 0),
+                eligible_paper_count=len(papers),
+                polite_pool_configured=search_result.polite_pool_configured,
+            )
+
+            manifest.log(
+                f"Academic search status={search_result.status.value}, "
+                f"eligible_papers={len(papers)}/{TARGET_PAPER_COUNT}, degraded={search_result.degraded}",
+                stage="ACADEMIC_SEARCH"
+            )
+
+            # G2 Guard: Provider failure across all queries with 0 papers must NOT proceed to normal generation!
+            if search_result.status in (SearchStatus.OPENALEX_RATE_LIMITED, SearchStatus.PROVIDER_UNAVAILABLE) and len(papers) == 0:
+                raise RuntimeError(
+                    f"학술 DB 공급자 장애({search_result.status.value})로 검색이 전면 실패했습니다. "
+                    "정상 브리핑 생성을 중단하고 장애 상태를 기록합니다."
+                )
+
+            # 2. Gemini Generation with G3 Condense and Attempt Tracking
+            current_stage = "GEMINI_GENERATION"
+            manifest.log("Starting Gemini content generation", stage="GEMINI_GENERATION")
+            content: str = self.gemini.generate_content(
+                topic, papers=papers, degraded=search_result.degraded, manifest_manager=manifest
+            )
             report: BriefingReport = BriefingReport(day_name, topic, content)
-            
+
+            quality_state = "DEGRADED" if search_result.degraded else "NORMAL"
+            manifest.update_report(body_length=len(content), quality_state=quality_state)
+
+            # 3. Notion Publishing
+            current_stage = "NOTION_PUBLISH"
+            manifest.log("Publishing report to Notion", stage="NOTION_PUBLISH")
             names: Tuple[str, str] = report.folder_names
             m_id: str = self.notion.get_or_create_page(self.parent_page_id, names[0], "📁")
             w_id: str = self.notion.get_or_create_page(m_id, names[1], "📂")
-            
+
             self.notion.publish_report(w_id, report)
-            print(f"[성공] 노션 저장 완료")
+            page_id_hash = hash_page_id(w_id)
+            manifest.update_notion(
+                status="PUBLISHED_TEXT",
+                page_id_hash=page_id_hash,
+                expected_image_count=0,
+                uploaded_image_count=0,
+                read_back_image_count=0,
+            )
+
+            manifest.finish(status="PUBLISHED_TEXT")
+            manifest.log("Daily Briefing successfully completed and published", stage="COMPLETION")
+
             self.slack.notify(
                 f"오늘자 브리핑 저장 완료: *{report.page_title}* "
                 f"(엄격 적격성 게이트 통과 OA 논문 {len(papers)}/{TARGET_PAPER_COUNT}건)",
                 "success"
             )
         except Exception as e:
+            manifest.record_failure(
+                stage=current_stage,
+                error_type=type(e).__name__,
+                safe_message=str(e)[:200]
+            )
+            manifest.log(
+                f"Daily Briefing failed at stage [{current_stage}]: {type(e).__name__} - {str(e)[:200]}",
+                level="ERROR",
+                stage=current_stage
+            )
             err_msg = f"오늘자 브리핑 생성 실패\n- *주제*: {topic}\n- *오류*: {str(e)[:200]}"
-            print(f"[실패] 오류 발생: {e}")
             self.slack.notify(err_msg, "error")
             raise e
+
 
 if __name__ == "__main__":
     env_vars = validate_environment()

@@ -2,6 +2,16 @@
 
 이 파일은 프로젝트의 주요 업데이트 및 수정 사항을 기록하는 릴리즈 노트입니다.
 
+## [2026-09-28] - Actions·Provider 관측성 복구 및 독립 검토 (v9.3-rc1)
+- **주요 변경 사항**:
+    - GitHub Actions runner와 Node.js 24 action SHA를 고정하고 실패 artifact 경로를 `artifacts/`로 통일.
+    - OpenAlex 429/정상 empty/Crossref 장애를 분리하고 bounded retry·query 간격을 적용.
+    - Gemini 길이 초과를 제한된 CONDENSE 경로로 처리하고 provider 오류별 attempt를 보존.
+    - `secret_`·`ntn_` token redaction 결함을 독립 검토에서 발견해 수정.
+- **검증 및 상태**:
+    - `Decision ID: T1-20260928-01`, 전체 107개 테스트와 `git diff --check` 통과.
+    - G1~G4 검토 완료, G5~G6 및 PR CI·운영 검증 전이므로 main 병합은 보류.
+
 ## [2026-09-22] - P0-4 official source interface with 5-doc sync (v9.2)
 - **주요 변경 사항**:
     - P0-4 official source interface with 5-doc sync
