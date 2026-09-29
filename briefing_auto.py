@@ -754,12 +754,12 @@ class GeminiProvider:
     def _build_condense_prompt(self, original_text: str) -> str:
         return (
             f"당신은 공인 학술 연구 심층 분석 리포트를 작성하는 수석 연구위원입니다.\n\n"
-            f"이전에 작성된 아래 브리핑 본문이 운영 분량 상한(공백 포함 9,000~11,000자)을 초과하였습니다.\n"
+            f"이전에 작성된 아래 브리핑 본문이 운영 분량 상한(공백 포함 {TARGET_BODY_MAX_CHARS:,}자)을 초과하였습니다.\n"
             f"다음 지침을 한 치의 오차도 없이 엄격히 준수하여 본문을 축약하십시오:\n\n"
             f"1. [핵심 불변조건] 본문에 포함된 모든 논문 번호 인용(예: [논문 1]), 출처 저널/저자 표기, 핵심 수치 데이터, 주요 연구 결론 및 제안을 100% 누락 없이 원문 그대로 보존하십시오.\n"
             f"2. [환각 및 위조 절대 금지] 새로운 사실, 가상의 출처, 새로운 URL 링크를 절대로 추가하거나 지어내지 마십시오.\n"
             f"3. [축약 기법] 중복되는 문장 서술, 과도한 수식어, 불필요하게 긴 서론 및 결론의 부연 설명을 정밀하게 다듬어 압축하십시오.\n"
-            f"4. [분량 계약] 최종 본문 길이는 반드시 공백 포함 {TARGET_BODY_MIN_CHARS:,}~{TARGET_BODY_MAX_CHARS:,}자 범위를 충족해야 합니다.\n"
+            f"4. [분량 계약] 최종 본문 길이는 반드시 공백 포함 {TARGET_BODY_MAX_CHARS:,}자 이하여야 합니다. 하한은 없습니다.\n"
             f"5. [참고문헌 분리] 본문 끝에 별도의 참고문헌 목록이나 외부 웹 링크를 직접 작성하지 마십시오.\n\n"
             f"[원래 작성된 초과 본문]\n"
             f"{original_text.strip()}"
@@ -826,7 +826,10 @@ class GeminiProvider:
                 elapsed = time.time() - t0
                 body_length = len(text_val.strip())
 
-                if TARGET_BODY_MIN_CHARS <= body_length <= TARGET_BODY_MAX_CHARS:
+                # Short output is publishable for human review. Only the upper
+                # bound triggers a rewrite; an empty/non-string response is
+                # rejected earlier by _generate_with_prompt().
+                if body_length <= TARGET_BODY_MAX_CHARS:
                     if manifest_manager:
                         manifest_manager.record_gemini_attempt(
                             model=model_name,
@@ -836,19 +839,6 @@ class GeminiProvider:
                             elapsed_seconds=elapsed,
                         )
                     return self._finalize_report(text_val, model_name, papers)
-
-                if body_length < TARGET_BODY_MIN_CHARS:
-                    if manifest_manager:
-                        manifest_manager.record_gemini_attempt(
-                            model=model_name,
-                            attempt_type="FULL",
-                            outcome=GeminiOutcome.OUTPUT_TOO_SHORT.value,
-                            char_count=body_length,
-                            elapsed_seconds=elapsed,
-                        )
-                    raise ValueError(
-                        f"본문 길이 {body_length:,}자가 최소 허용 범위 {TARGET_BODY_MIN_CHARS:,}자에 미달했습니다."
-                    )
 
                 # body_length > TARGET_BODY_MAX_CHARS -> attempt CONDENSE
                 if manifest_manager:
@@ -868,7 +858,7 @@ class GeminiProvider:
                 elapsed_condense = time.time() - t1
                 condensed_length = len(condensed_val.strip())
 
-                if TARGET_BODY_MIN_CHARS <= condensed_length <= TARGET_BODY_MAX_CHARS:
+                if condensed_length <= TARGET_BODY_MAX_CHARS:
                     if manifest_manager:
                         manifest_manager.record_gemini_attempt(
                             model=model_name,
@@ -880,16 +870,11 @@ class GeminiProvider:
                     print(f"[성공] {model_name} CONDENSE 축약 성공 ({condensed_length:,}자)")
                     return self._finalize_report(condensed_val, model_name, papers)
                 else:
-                    condense_outcome = (
-                        GeminiOutcome.OUTPUT_TOO_LONG.value
-                        if condensed_length > TARGET_BODY_MAX_CHARS
-                        else GeminiOutcome.OUTPUT_TOO_SHORT.value
-                    )
                     if manifest_manager:
                         manifest_manager.record_gemini_attempt(
                             model=model_name,
                             attempt_type="CONDENSE",
-                            outcome=condense_outcome,
+                            outcome=GeminiOutcome.OUTPUT_TOO_LONG.value,
                             char_count=condensed_length,
                             elapsed_seconds=elapsed_condense,
                         )
@@ -904,7 +889,7 @@ class GeminiProvider:
                 last_err = e
 
                 # G3 Contract Rule: If length contract violated, stop fallback!
-                if outcome in (GeminiOutcome.OUTPUT_TOO_LONG.value, GeminiOutcome.OUTPUT_TOO_SHORT.value):
+                if outcome == GeminiOutcome.OUTPUT_TOO_LONG.value:
                     raise e
 
                 # Record attempt if not already recorded
@@ -976,10 +961,10 @@ class GeminiProvider:
         prompt = self._build_prompt(topic, papers=papers)
         text_val = self._generate_with_prompt(model_name, prompt)
         body_length = len(text_val.strip())
-        if not TARGET_BODY_MIN_CHARS <= body_length <= TARGET_BODY_MAX_CHARS:
+        if body_length > TARGET_BODY_MAX_CHARS:
             raise ValueError(
-                f"본문 길이 {body_length:,}자가 허용 범위 "
-                f"{TARGET_BODY_MIN_CHARS:,}~{TARGET_BODY_MAX_CHARS:,}자를 벗어났습니다."
+                f"본문 길이 {body_length:,}자가 운영 상한 "
+                f"{TARGET_BODY_MAX_CHARS:,}자를 초과했습니다."
             )
         return text_val
 

@@ -370,6 +370,32 @@ def test_g3_ci_test_mode_skips_operational_jitter(monkeypatch):
     sleep_mock.assert_not_called()
 
 
+def test_g3_short_output_is_published_without_condense_or_fallback(tmp_path):
+    """A non-empty body below 9,000 chars is valid and proceeds to publication."""
+    provider = GeminiProvider(api_key="mock_key")
+    provider.client = MagicMock()
+    provider.client.models.count_tokens.return_value.total_tokens = 500
+    short_body = "검토용 짧은 브리핑" * 50
+    provider.client.models.generate_content.return_value = MagicMock(text=short_body)
+
+    manifest_mgr = ManifestManager(artifacts_dir=str(tmp_path / "artifacts"))
+    manifest_mgr.initialize("dec-short", "주제")
+
+    result = provider.generate_content("주제", papers=[], manifest_manager=manifest_mgr)
+
+    assert short_body in result
+    assert provider.client.models.generate_content.call_count == 1
+    assert manifest_mgr.manifest_data["gemini_attempts"] == [
+        {
+            "model": "models/gemini-3.8-flash",
+            "attempt_type": "FULL",
+            "outcome": GeminiOutcome.SUCCESS.value,
+            "char_count": len(short_body),
+            "elapsed_seconds": manifest_mgr.manifest_data["gemini_attempts"][0]["elapsed_seconds"],
+        }
+    ]
+
+
 def test_g3_gemini_condense_triggered_when_too_long(tmp_path):
     """G3: Output > 11,000 chars triggers CONDENSE prompt on the same model and succeeds."""
     provider = GeminiProvider(api_key="mock_key")

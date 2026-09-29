@@ -37,7 +37,8 @@
 | 12 | **History Guardian** | 체크포인트 설정 및 데이터 보존 확인 | "컨텍스트 전이(Bleeding)" 및 "초기화 실패" 공격 |
 | 13 | **Security Officer** | 연구 윤리 준수 및 데이터 보안 감사 | "보안 취약" 및 "데이터 폐쇄성/윤리 결함" 타격 |
 
-## 🚀 주요 기능 및 인프라 (v9.3-rc1 Reliability Hardening)
+## 🚀 주요 기능 및 인프라 (v9.3.1 Short Briefing Publication)
+- **짧은 브리핑 우선 게시**: 비어 있지 않은 Gemini 본문은 글자 수 하한 없이 Notion에 게시하고, 11,000자 초과 출력만 축약한다.
 - **고정 실행환경**: GitHub Actions runner를 `ubuntu-24.04`로 고정하고 checkout/setup-python/upload-artifact를 공식 Node.js 24 지원 release의 full SHA로 고정.
 - **공급자 장애 분리**: OpenAlex 429·Crossref 장애·정상 검색 0건을 별도 상태로 관리하고 `Retry-After`, bounded backoff, query 간격을 적용.
 - **Gemini 길이 복구 계약**: 출력 초과 시 같은 모델의 CONDENSE 1회만 허용하며 provider availability 오류에서만 다음 모델로 전환하고 모든 시도를 manifest에 기록.
