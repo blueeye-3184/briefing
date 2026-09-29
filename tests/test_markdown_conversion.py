@@ -51,8 +51,37 @@ def test_numbered_list_supports_ten_references_and_links():
     assert rich_text[0]["text"]["link"]["url"] == "https://doi.org/10.1000/example"
 
 
-def test_notion_operational_block_limit_is_enforced():
+def test_notion_operational_block_limit_compacts_body_without_truncation():
     notion = NotionPublisher("fake_token")
-    content = "\n".join(f"문단 {i}" for i in range(NOTION_OPERATIONAL_BLOCK_LIMIT + 1))
+    content = "\n".join(
+        f"- 문단 {i} [출처](https://example.org/{i})"
+        for i in range(97)
+    )
+
+    blocks = notion.markdown_to_notion_blocks(content)
+
+    assert len(blocks) <= NOTION_OPERATIONAL_BLOCK_LIMIT
+    rendered_text = "".join(
+        node["text"]["content"]
+        for block in blocks
+        for node in block[block["type"]].get("rich_text", [])
+    )
+    assert "문단 0" in rendered_text
+    assert "문단 96" in rendered_text
+    links = [
+        node["text"].get("link", {}).get("url")
+        for block in blocks
+        for node in block[block["type"]].get("rich_text", [])
+        if node["text"].get("link")
+    ]
+    assert links[0] == "https://example.org/0"
+    assert links[-1] == "https://example.org/96"
+
+
+def test_notion_operational_block_limit_rejects_uncompactable_structure():
+    notion = NotionPublisher("fake_token")
+    content = "\n".join(
+        f"# 제목 {i}" for i in range(NOTION_OPERATIONAL_BLOCK_LIMIT + 1)
+    )
     with pytest.raises(ValueError, match="운영 상한"):
         notion.markdown_to_notion_blocks(content)
