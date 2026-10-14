@@ -137,6 +137,9 @@ SENSITIVE_PATTERNS = [
     re.compile(r'(ntn_)[A-Za-z0-9_\-]{20,}', re.IGNORECASE),
     re.compile(r'(https://hooks\.slack\.com/services/)[A-Za-z0-9/\-_]+', re.IGNORECASE),
     re.compile(r'(mailto:)[^@\s]+@[^@\s]+\.[a-zA-Z0-9]+', re.IGNORECASE),
+    re.compile(r'([?&]mailto=)[^@\s&]+@[^@\s&]+\.[a-zA-Z0-9]+', re.IGNORECASE),
+    re.compile(r'([?&]api_key=)[^&\s]+', re.IGNORECASE),
+    re.compile(r'(api-key:\s*)[^\s]+', re.IGNORECASE),
 ]
 
 def redact_secrets(text: str) -> str:
@@ -149,11 +152,12 @@ def redact_secrets(text: str) -> str:
     return result
 
 
-def hash_page_id(page_id: Optional[str]) -> Optional[str]:
+def hash_page_id(page_id: Any) -> Optional[str]:
     """Never expose raw page ID; produce a short deterministic one-way hash."""
     if not page_id:
         return None
-    return hashlib.sha256(page_id.encode('utf-8')).hexdigest()[:12]
+    val = page_id if isinstance(page_id, str) else str(page_id)
+    return hashlib.sha256(val.encode('utf-8')).hexdigest()[:12]
 
 
 # ==========================================

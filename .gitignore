@@ -26,3 +26,6 @@ artifacts/
 !/01_Standard_Procedures/00.Governance_Directive.md
 !/01_Standard_Procedures/00.Project_Protocol.md
 !/01_Standard_Procedures/00.SOP_Manual.md
+
+# IDE
+.vscode/
