@@ -4,6 +4,13 @@
 
 ## [2026-10-14] - OpenAlex Polite Pool 강화 및 수요일 OA 검증 자료 정책 개편 (v9.3.3)
 - **주요 변경 사항**:
+    - OpenAlex Polite Pool 강화 및 수요일 OA 검증 자료 정책 개편
+- **거버넌스 승인 및 검증**:
+    - Tier 1 결정 사항(`Decision ID: T1-20261014-01`)으로 13인 위원회의 비준 획득 완료.
+    - 단위 테스트 전수 통과 및 SOP 3 규준 5대 연구 자산 동시 동기화 완료.
+
+## [2026-10-14] - OpenAlex Polite Pool 강화 및 수요일 OA 검증 자료 정책 개편 (v9.3.3)
+- **주요 변경 사항**:
     - OpenAlex API 요청 시 URL 쿼리 파라미터에 `&mailto={email}`을 명시적으로 추가하여 Actions Runner 공용 IP 대역에 대한 429 차단 우회 및 Polite Pool 신뢰성 확보.
     - 무료 발급 가능한 OpenAlex 공식 `OPENALEX_API_KEY`를 지원하도록 헤더(`api-key`) 및 쿼리 파라미터(`api_key=`) 확장.
     - GitHub Actions 워크플로우(`daily_briefing.yml`)에 `OPENALEX_MAILTO` 및 `OPENALEX_API_KEY` 환경 변수 주입.
