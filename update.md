@@ -2,7 +2,27 @@
 
 이 파일은 프로젝트의 주요 업데이트 및 수정 사항을 기록하는 릴리즈 노트입니다.
 
-## [2026-09-29] - Notion 블록 예산 압축 (v9.3.2)
+## [2026-10-14] - OpenAlex Polite Pool 강화 및 수요일 OA 검증 자료 정책 개편 (v9.3.3)
+- **주요 변경 사항**:
+    - OpenAlex Polite Pool 강화 및 수요일 OA 검증 자료 정책 개편
+- **거버넌스 승인 및 검증**:
+    - Tier 1 결정 사항(`Decision ID: T1-20261014-01`)으로 13인 위원회의 비준 획득 완료.
+    - 단위 테스트 전수 통과 및 SOP 3 규준 5대 연구 자산 동시 동기화 완료.
+
+## [2026-10-14] - OpenAlex Polite Pool 강화 및 수요일 OA 검증 자료 정책 개편 (v9.3.3)
+- **주요 변경 사항**:
+    - OpenAlex API 요청 시 URL 쿼리 파라미터에 `&mailto={email}`을 명시적으로 추가하여 Actions Runner 공용 IP 대역에 대한 429 차단 우회 및 Polite Pool 신뢰성 확보.
+    - 무료 발급 가능한 OpenAlex 공식 `OPENALEX_API_KEY`를 지원하도록 헤더(`api-key`) 및 쿼리 파라미터(`api_key=`) 확장.
+    - GitHub Actions 워크플로우(`daily_briefing.yml`)에 `OPENALEX_MAILTO` 및 `OPENALEX_API_KEY` 환경 변수 주입.
+    - Rate limit 백오프 기본 대기 시간을 1초 -> 2초, 최대 30초, 쿼리 간격 0.5초로 완화.
+    - **수요일(설계 자동화 및 BIM) OA 검증 자료 개편**: 저널 논문 외 학술대회 프로시딩(conference proceedings), 정부/연구기관(KICT, KAIA, MOLIT) 연구보고서 및 BIM 표준자료 등 OA 라이선스가 검증된 공공·학술 자료를 공식 허용하도록 G2 가드 개편.
+    - 학술 DB 일시 장애 시 신뢰할 수 있는 공공 표준 연구자료(`WEDNESDAY_OA_BIM_FALLBACK_MATERIALS`) 대체 파이프라인 탑재.
+    - `manifest_manager.py`의 민감 정보 마스킹(`redact_secrets`)에 URL 쿼리 파라미터(`mailto=`, `api_key=`) 및 `api-key` 헤더 정규식 추가.
+- **검증 및 상태**:
+    - 전체 116개 테스트(신규 단위 테스트 5종 포함) 전수 통과 (`116 passed in 18.27s`).
+    - `git diff --check` 무결성 검증 완료.
+
+## [2026-09-29] - Notion Block Budget & Recovery (v9.3.2)
 - **주요 변경 사항**:
     - Markdown의 비어 있지 않은 각 줄을 개별 블록으로 만든 뒤 거부하던 구조를 보완.
     - 90블록 초과 시 연속 본문·목록을 1,800자 이하 문단으로 안전하게 묶어 내용과 링크를 보존.

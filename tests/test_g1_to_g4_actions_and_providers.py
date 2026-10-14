@@ -286,6 +286,64 @@ def test_g2_polite_pool_configured_and_email_not_leaked():
     assert "secret_researcher@example.com" not in audit_json
 
 
+def test_g2_openalex_request_includes_mailto_query_param():
+    """G2/Fix: Outgoing OpenAlex request must include mailto in query parameters for Polite Pool."""
+    provider = AcademicProvider(email="polite_user@example.com")
+    res_200 = MagicMock(status_code=200)
+    res_200.json.return_value = {"results": []}
+
+    captured_urls = []
+
+    def mock_get(url, **kwargs):
+        captured_urls.append(url)
+        return res_200
+
+    with patch("requests.get", side_effect=mock_get):
+        provider.search_with_status(["테스트검색"], max_papers=1)
+
+    assert len(captured_urls) == 1
+    assert "mailto=polite_user%40example.com" in captured_urls[0] or "mailto=polite_user@example.com" in captured_urls[0]
+
+
+def test_g2_openalex_api_key_support_in_header_and_query():
+    """G2/Fix: OpenAlex API key is included in query params and request headers when configured."""
+    provider = AcademicProvider(api_key="oa-secret-key-999")
+    assert provider.polite_pool_configured is True
+    assert provider.headers.get("api-key") == "oa-secret-key-999"
+
+    res_200 = MagicMock(status_code=200)
+    res_200.json.return_value = {"results": []}
+
+    captured_requests = []
+
+    def mock_get(url, **kwargs):
+        captured_requests.append((url, kwargs.get("headers", {})))
+        return res_200
+
+    with patch("requests.get", side_effect=mock_get):
+        provider.search_with_status(["테스트검색"], max_papers=1)
+
+    assert len(captured_requests) == 1
+    req_url, req_headers = captured_requests[0]
+    assert "api_key=oa-secret-key-999" in req_url
+    assert req_headers.get("api-key") == "oa-secret-key-999"
+
+
+def test_g2_redact_secrets_redacts_query_params_and_headers():
+    """G2/Fix: Redact secrets successfully masks mailto and api_key in URLs and header representations."""
+    from manifest_manager import redact_secrets
+
+    sample_url = "https://api.openalex.org/works?search=test&mailto=user@example.com&api_key=oa-12345"
+    redacted = redact_secrets(sample_url)
+    assert "user@example.com" not in redacted
+    assert "oa-12345" not in redacted
+    assert "mailto=[REDACTED]" in redacted or "mailto=" in redacted
+
+    sample_header = "api-key: oa-key-secret-abc"
+    redacted_header = redact_secrets(sample_header)
+    assert "oa-key-secret-abc" not in redacted_header
+
+
 def test_g2_guard_blocks_generation_when_all_queries_rate_limited(tmp_path):
     """G2: Service completely blocks normal generation if all queries are rate limited."""
     mock_gemini = MagicMock(spec=GeminiProvider)
@@ -312,8 +370,9 @@ def test_g2_guard_blocks_generation_when_all_queries_rate_limited(tmp_path):
     )
 
     with patch.dict(os.environ, {"GEMINI_API_KEY": "k", "NOTION_TOKEN": "t", "PARENT_PAGE_ID": "p"}):
-        with pytest.raises(RuntimeError, match="학술 DB 공급자 장애"):
-            service.run_daily_briefing()
+        with patch.object(BriefingSchedule, "get_today_topic", return_value=("월요일", "구미/김천 지역 부동산 정책 및 시장 흐름 분석")):
+            with pytest.raises(RuntimeError, match="학술 DB 공급자 장애"):
+                service.run_daily_briefing()
 
     # Gemini generation and Notion publish must NOT have been called!
     mock_gemini.generate_content.assert_not_called()
@@ -677,3 +736,83 @@ def test_g4_atomic_write_manifest_produces_valid_json(tmp_path):
     with open(mgr.manifest_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     assert len(data["gemini_attempts"]) == 10
+
+
+def test_wednesday_oa_materials_mode_accepts_proceedings_and_reports():
+    """Wednesday Policy: allow_all_oa_materials=True allows proceedings and reports with valid OA licenses."""
+    provider = AcademicProvider()
+    res_200 = MagicMock(status_code=200)
+    res_200.json.return_value = {
+        "results": [{
+            "id": "https://openalex.org/W-proc",
+            "title": "BIM Automation Proceedings",
+            "doi": "https://doi.org/10.1000/proc.1",
+            "publication_year": 2025,
+            "authorships": [{"author": {"display_name": "연구자"}}],
+            "primary_location": {"source": {"display_name": "BIM 학술대회", "type": "conference"}},
+            "best_oa_location": {
+                "is_oa": True,
+                "pdf_url": "https://example.com/proc.pdf",
+                "version": "publishedVersion",
+                "license": "cc-by",
+            },
+            "is_retracted": False,
+            "abstract_inverted_index": {"설계": [0], "자동화": [1]},
+        }]
+    }
+    crossref_res = MagicMock(status_code=200)
+    crossref_res.json.return_value = {
+        "message": {"type": "proceedings-article", "title": ["BIM Automation Proceedings"]}
+    }
+
+    def mock_get(url, **kwargs):
+        if "crossref.org" in url:
+            return crossref_res
+        return res_200
+
+    with patch("requests.get", side_effect=mock_get):
+        result = provider.search_with_status(["BIM"], max_papers=1, allow_all_oa_materials=True)
+
+    assert result.status == SearchStatus.SEARCH_OK
+    assert len(result.papers) == 1
+    assert result.papers[0].title == "BIM Automation Proceedings"
+    assert result.papers[0].crossref_type == "proceedings-article"
+
+
+def test_wednesday_oa_fallback_triggers_when_openalex_rate_limited(tmp_path):
+    """Wednesday Policy: When rate-limited on Wednesday, fallback to verified OA BIM materials and proceed."""
+    from briefing_auto import WEDNESDAY_OA_BIM_FALLBACK_MATERIALS
+
+    mock_gemini = MagicMock(spec=GeminiProvider)
+    mock_gemini.generate_content.return_value = "생성된 브리핑 본문 텍스트" * 200
+    mock_notion = MagicMock(spec=NotionPublisher)
+    mock_slack = MagicMock(spec=SlackNotifier)
+    mock_academic = MagicMock(spec=AcademicProvider)
+
+    # Return rate limited with 0 papers
+    mock_academic.search_with_status.return_value = AcademicSearchResult(
+        papers=[],
+        status=SearchStatus.OPENALEX_RATE_LIMITED,
+        query_metrics={"query_count": 3, "request_count": 9, "rate_limited_count": 9, "success_count": 0},
+        degraded=True,
+    )
+
+    manifest_mgr = ManifestManager(artifacts_dir=str(tmp_path / "artifacts_wed"))
+    service = BriefingApplicationService(
+        gemini=mock_gemini,
+        notion=mock_notion,
+        slack=mock_slack,
+        academic=mock_academic,
+        parent_page_id="test-parent-page",
+        manifest_manager=manifest_mgr,
+    )
+
+    with patch.dict(os.environ, {"GEMINI_API_KEY": "dummy", "NOTION_TOKEN": "dummy", "PARENT_PAGE_ID": "dummy"}):
+        with patch.object(BriefingSchedule, "get_today_topic", return_value=("수요일", "설계 자동화 기술 및 BIM 최신 동향")):
+            service.run_daily_briefing()
+
+    mock_gemini.generate_content.assert_called_once()
+    called_kwargs = mock_gemini.generate_content.call_args[1]
+    assert called_kwargs.get("is_oa_material_mode") is True
+    assert called_kwargs.get("papers") == WEDNESDAY_OA_BIM_FALLBACK_MATERIALS
+    mock_notion.publish_report.assert_called_once()
